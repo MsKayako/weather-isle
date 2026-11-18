@@ -94,6 +94,7 @@ canvas#fx{position:absolute; inset:0; width:100%; height:100%; pointer-events:no
   <div class="controls">
     <div class="modes stack" role="group" aria-label="Preview weather">
       <button data-w="sun" id="w-sun">Sun</button>
+      <button data-w="partly">Partly</button>
       <button data-w="cloud">Clouds</button>
       <button data-w="rain">Rain</button>
       <button data-w="storm">Storm</button>
@@ -101,10 +102,6 @@ canvas#fx{position:absolute; inset:0; width:100%; height:100%; pointer-events:no
     <div class="modes stack" role="group" aria-label="Day or night">
       <button data-t="13">Day</button>
       <button data-t="22">Night</button>
-    </div>
-    <div class="modes stack" role="group" aria-label="Perspective" hidden>
-      <button data-p="iso">Iso</button>
-      <button data-p="cav">Front</button>
     </div>
   </div>
   <div class="bottom">
@@ -777,7 +774,7 @@ const CSIZE = [1.25, 0.9, 1.15, 1.0, 1.4, 0.85, 1.2, 0.95, 1.1, 1.3];
 // lanes across the wind (0 = straight over the island, so it gets rained on) and a height for each
 const LANES =   [0.5, -9, 5, -4, -13, 2.5, -6.5, 7.5, -1.5, -11];
 const HEIGHTS = [9.5, 13, 10.5, 15, 8.5, 12, 14.5, 9, 11, 16];
-const CLOUD_ROW_Y = [15.0, 11.0, 17.8, 18.4], CLOUD_ROW_P = [3.26, -8.84, -2.23, -6.43], CLOUD_SPAN = 16;   // Front: rows just wider than the view
+const CLOUD_ROW_Y = [12.0, 8.2, 14.6, 15.2], CLOUD_ROW_P = [3.26, -8.84, -2.23, -6.43], CLOUD_SPAN = 16;   // Front: rows just wider than the view
 const CLOUD_SZ = [1.05, 0.93, 1, 0.95, 1.08, 0.92, 1.02, 0.97, 1, 1], CLOUD_LN = [1.2, 0.9, 1.35, 1.0, 0.85, 1.3, 1.1, 1.2, 1, 1];   // Front: a little bigger or smaller, and longer or shorter pills (never fatter)
 // (rows: each sits in the top third of the screen, and its shade lands on a different band of the build grid, front to back)
 const CLOUDS = Array.from({length: NCL}, (_, i) => {
@@ -3150,6 +3147,8 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
 
 /* ---------- Weather × time of day ---------- */
 const WEATHER = {
+  partly:{day:{bg:0x6db8c9, tint:[1,1,1],          desat:0.04}, night:{bg:0x1e324e, tint:[0.35,0.42,0.62], desat:0.31},
+          rain:0,   cloud:0.4, cloudCol:[1,1,1],        gull:0.9, stars:0.6, wind:0.4,  storm:0, wet:0,   glowDay:0, sun:1},
   sun:   {day:{bg:0x64b6c8, tint:[1,1,1],          desat:0},    night:{bg:0x1c3150, tint:[0.36,0.43,0.64], desat:0.3},
           rain:0,   cloud:0, cloudCol:[1,1,1],          gull:1,   stars:1,   wind:0.25, storm:0, wet:0,   glowDay:0, sun:1},
   cloud: {day:{bg:0x86b0be, tint:[0.95,0.96,0.98], desat:0.2},  night:{bg:0x213248, tint:[0.33,0.38,0.54], desat:0.32},
@@ -3159,7 +3158,7 @@ const WEATHER = {
   storm: {day:{bg:0x4b616c, tint:[0.63,0.68,0.75], desat:0.42}, night:{bg:0x101923, tint:[0.23,0.27,0.37], desat:0.4},
           rain:1,   cloud:1, cloudCol:[0.55,0.59,0.66], gull:0, stars:0,   wind:1.7,  storm:1, wet:1,   glowDay:0.6, sun:0.2},
 };
-const TEMP = {sun:19, cloud:14, rain:10, storm:9};
+const TEMP = {sun:19, partly:17, cloud:14, rain:10, storm:9};
 const cur = {bg:new THREE.Color(0x64b6c8), tint:new THREE.Vector3(1,1,1), cloudCol:new THREE.Vector3(1,1,1),
              desat:0, glow:0, rain:0, cloud:0, gull:1, stars:0, wind:0.25, storm:0, wet:0, sun:1};
 const goalBg = new THREE.Color(), V_ = new THREE.Vector3(), phone = $('phone');
@@ -3470,7 +3469,7 @@ function loop(now){
     r.quaternion.copy(cam.quaternion); r.scale.set(u.dir, -1, 1);
   });
 
-  CAT.update(dt, t, night ? 'night' : weather);
+  CAT.update(dt, t, night ? 'night' : weather === 'partly' ? 'sun' : weather);   /* the cat plays out as on a sunny day */
   WORLD.update(dt, t);
 
   // rain: streaks fall through the world, rings where they land
@@ -3576,8 +3575,8 @@ function loop(now){
   // WMO weather codes (Open-Meteo) -> icon, words, and the island sky we can draw today
   function sky(code, isNight){
     const c = code | 0;
-    if (c <= 1) return {ic: isNight ? 'moon' : c ? 'partly' : 'sun', say: isNight ? (c ? 'Mostly clear' : 'Clear') : c ? 'Mostly sunny' : 'Sunny', game: 'sun'};
-    if (c === 2) return {ic: isNight ? 'cloud' : 'partly', say: 'Partly cloudy', game: 'cloud'};
+    if (c === 0) return {ic: isNight ? 'moon' : 'sun', say: isNight ? 'Clear' : 'Sunny', game: 'sun'};
+    if (c <= 2) return {ic: isNight ? (c === 1 ? 'moon' : 'cloud') : 'partly', say: c === 1 ? (isNight ? 'Mostly clear' : 'Mostly sunny') : 'Partly cloudy', game: 'partly'};
     if (c === 3) return {ic: 'cloud', say: 'Cloudy', game: 'cloud'};
     if (c === 45 || c === 48) return {ic: 'fog', say: 'Fog', game: 'cloud'};
     if (c >= 51 && c <= 57) return {ic: 'rain', say: 'Drizzle', game: 'rain'};
@@ -3651,7 +3650,11 @@ function loop(now){
 .wx-day{display:grid; grid-template-columns:30px 24px auto auto; align-items:center; column-gap:6px; height:24px}
 .wx-day .n{font-size:14px; font-weight:600; opacity:.85} .wx-day .h{font-size:15px; font-weight:700; min-width:21px} .wx-day .l{font-size:14px; font-weight:600; opacity:.65}
 .wx-hint{font-size:12px; font-weight:700; opacity:.9; margin-top:2px; line-height:15px}
-.wx.away, .wx-shade.away{opacity:0} .wx.away button{pointer-events:none}
+.wx.away, .wx-shade.away, .wx-shade.off{opacity:0}
+.wx{transition:opacity .3s, color .5s}
+.wx.ink{color:${INK}} .wx.ink .t{text-shadow:0 0 6px rgba(255,255,255,.3)}
+.wx.ink .wx-next{border-left-color:rgba(47,79,92,.35) !important}
+.wx.ink button:focus-visible{outline-color:${INK}} .wx.away button{pointer-events:none}
 .wx.sheet-open .wx-city, .wx.sheet-open .wx-left, .wx.sheet-open .wx-next{opacity:0; pointer-events:none}
 .wx-city, .wx-left, .wx-next{transition:opacity .25s}
 .wx-mini{position:absolute; z-index:4; left:0; right:0; top:calc(64px + env(safe-area-inset-top, 0px)); display:flex; justify-content:center; align-items:center; gap:8px;
@@ -3718,6 +3721,9 @@ body.wx-sheeton .wx-mini{opacity:1} body.wx-sheeton .wx-dim{opacity:1; pointer-e
     const p = selected(), d = dataOf(p) || sample();
     const isNight = night;                          // the island's own day / night
     lightDrops = isNight || weather === 'storm';
+    // light skies (day: sun, partly, clouds): dark blue writing, no shade; dark skies (night, rain, storm): white writing over a soft shade
+    const ink = !isNight && (weather === 'sun' || weather === 'partly' || weather === 'cloud');
+    root.classList.toggle('ink', ink); shade.classList.toggle('off', ink);
     const s = sky(d.code, isNight), t = d.days[0] || {hi: d.temp, lo: d.temp};
     root.querySelector('.wx-city span').textContent = p.name;
     const tmp = root.querySelector('.wx-temp'); tmp.textContent = deg1(d.temp); tmp.style.fontSize = '';
