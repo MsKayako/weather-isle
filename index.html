@@ -100,6 +100,7 @@ canvas#fx{position:absolute; inset:0; width:100%; height:100%; pointer-events:no
       <button data-w="storm">Storm</button>
       <button data-w="snow">Snow</button>
       <button data-w="sleet">Sleet</button>
+      <button data-w="freezing">Freezing</button>
     </div>
     <div class="modes stack" role="group" aria-label="Day or night">
       <button data-t="13">Day</button>
@@ -420,6 +421,7 @@ const SHARED = {
   uSnow:     {value: 0},
   uSnowT:    {value: 0},
   uSlush:    {value: 0},
+  uIce:      {value: 0},
   uPrints:   {value: Array.from({length: 16}, () => new THREE.Vector3(0, 0, 0))},
   uFlash:    {value: 0},
   uTime:     {value: 0},
@@ -492,7 +494,7 @@ const mat = new THREE.ShaderMaterial({
     ${CLOUD_SHADOW_GLSL}
     uniform sampler2D uAtlas;
     varying vec3 vC, vP, vN, vU; varying vec2 vI;
-    uniform float uSnow, uSnowT, uSlush; uniform vec3 uPrints[16];
+    uniform float uSnow, uSnowT, uSlush, uIce; uniform vec3 uPrints[16];
     float snH(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float snN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(snH(i), snH(i + vec2(1.0, 0.0)), f.x), mix(snH(i + vec2(0.0, 1.0)), snH(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -529,6 +531,17 @@ const mat = new THREE.ShaderMaterial({
         vec3 pc = mix(vec3(0.86, 0.9, 0.92), vec3(0.6, 0.7, 0.77), wat);
         pc = mix(pc, vec3(0.83, 0.88, 0.91), wat * clump * 0.9); pc = mix(pc, vec3(0.8, 0.88, 0.94), wat * (1.0 - clump) * glint);
         float k = rim * uSlush * (1.0 - sn); c = mix(c, pc, k); sn = max(sn, k * 0.6); }
+      if (uIce > 0.002){                                           // verglas: a glassy coat over the grass, with crisp glints; icicles along the edges
+        if (n.y > 0.5 && vP.y > -0.02){
+          vec3 ice = mix(c, vec3(0.80, 0.90, 0.96), 0.38);
+          float glint = smoothstep(0.93, 0.95, sin((vP.x - vP.z) * 2.6 + snN(vP.xz * 0.9 + 3.0) * 4.0)) * step(0.45, snN(vP.xz * 0.6 + 9.0));
+          ice = mix(ice, vec3(0.95, 0.98, 1.0), glint * 0.85); c = mix(c, ice, uIce * (1.0 - sn));
+        } else if (n.y < 0.5){
+          float al = (abs(n.x) > 0.5 ? vP.z : vP.x) * 4.2, id = floor(al), f = fract(al), dn = -vP.y, len = 0.08 + 0.16 * snH(vec2(id, 3.0));
+          float ic = step(dn, len) * step(abs(f - 0.5), 0.42 * (1.0 - dn / len)) * step(0.25, snH(vec2(id, 7.0))), band = step(dn, 0.03);
+          c = mix(c, mix(vec3(0.76, 0.88, 0.96), vec3(0.93, 0.97, 1.0), step(f, 0.5)), max(ic, band) * uIce);
+        }
+      }
       c *= mix(1.0, 0.86, uWet * max(n.y, 0.0) * (1.0 - sn));                  // wet tops go a little darker
       float lit = clamp(dot(n, uLd) * 3.0, 0.0, 1.0);
       c *= mix(vec3(1.0), vec3(0.64, 0.76, 0.70), castShadow(vP, n) * 0.78 * uSun);
@@ -1999,7 +2012,7 @@ const WORLD = (() => {
     side, transparent: over, depthWrite: !over, userData: {kind, side}, uniforms: {...SHARED, uKind: {value: kind}, uMap: {value: null}},
     vertexShader: `attribute vec3 color; varying vec3 vC, vN, vP, vL; varying vec2 vUv; void main(){ vC = color; vL = position; vUv = uv; vec4 wp = modelMatrix * vec4(position, 1.0); vP = wp.xyz;
       vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * wp; }`,
-    fragmentShader: `uniform vec3 uTint; uniform float uDesat, uSun, uSnow; uniform int uKind; uniform sampler2D uMap; varying vec3 vC, vN, vP, vL; varying vec2 vUv;
+    fragmentShader: `uniform vec3 uTint; uniform float uDesat, uSun, uSnow, uIce; uniform int uKind; uniform sampler2D uMap; varying vec3 vC, vN, vP, vL; varying vec2 vUv;
       ${CLOUD_SHADOW_GLSL}
       void main(){
         vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
@@ -2035,6 +2048,7 @@ const WORLD = (() => {
         c *= 0.97 + 0.05 * smoothstep(0.0, 1.4, vL.y);                                                                          // lighter higher up
         vec3 H = normalize(L + V); c += vec3(1.0, 0.98, 0.94) * 0.05 * pow(max(dot(n, H), 0.0), 16.0);
         { float up = smoothstep(0.5, 0.8, n.y) * smoothstep(0.3, 0.75, uSnow); c = mix(c, vec3(0.95, 0.975, 1.0) * (0.92 + 0.08 * k), up * 0.94); }   // snow settles on what faces up
+        if (uIce > 0.002){ vec3 gl = c * vec3(0.9, 0.97, 1.05) + vec3(0.04, 0.06, 0.08) + vec3(0.9, 0.96, 1.0) * 0.35 * smoothstep(0.55, 0.7, pow(max(dot(n, H), 0.0), 20.0)); c = mix(c, gl, uIce); }   // verglas: everything glazed, with a crisp shine
         c *= 1.0 - 0.15 * cloudShadow(vP) * uSun;
         c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, 1.14);                                                     // as rich as the drawings
         float g = dot(c, vec3(0.299, 0.587, 0.114)); gl_FragColor = vec4(mix(c, vec3(g), uDesat) * uTint, 1.0);
@@ -3265,9 +3279,13 @@ const TEMP = {sun:19, partly:17, cloud:14, rain:10, storm:9, snow:-1};
 WEATHER.sleet = {day:{bg:0x7d97a2, tint:[0.85,0.88,0.91], desat:0.3}, night:{bg:0x1a2a3b, tint:[0.31,0.36,0.5], desat:0.35},
           rain:0.32, cloud:0.8, cloudCol:[0.84,0.87,0.9], gull:0, stars:0,  wind:0.7,  storm:0, wet:1,   glowDay:0.35, sun:0.3, snow:0.42, slush:1};
 TEMP.sleet = 1;
+// freezing rain: plain rain from a cold grey sky that freezes where it lands: verglas over the island and the pieces, icicles on the edges
+WEATHER.freezing = {day:{bg:0x7690a0, tint:[0.82,0.87,0.92], desat:0.3}, night:{bg:0x182739, tint:[0.3,0.36,0.52], desat:0.35},
+          rain:0.5, cloud:0.8, cloudCol:[0.82,0.86,0.9], gull:0, stars:0,  wind:0.5,  storm:0, wet:1,   glowDay:0.35, sun:0.3, ice:1};
+TEMP.freezing = -1;
 WEATHER.snow = {day:{bg:0xb3c7d0, tint:[0.97,0.98,1.0], desat:0.14}, night:{bg:0x26364d, tint:[0.40,0.46,0.64], desat:0.3},
           rain:0,   cloud:0.8, cloudCol:[0.94,0.96,0.98], gull:0, stars:0,  wind:0.3,  storm:0, wet:0,   glowDay:0.2, sun:0.4, snow:1};
-let SNOW_CM = 0, SNOW_TEST = null, SNOW_RATE = 0.75, snowG = 0, snowT = 0, SNOW_H = 0, slushG = 0;
+let SNOW_CM = 0, SNOW_TEST = null, SNOW_RATE = 0.75, snowG = 0, snowT = 0, SNOW_H = 0, slushG = 0, iceG = 0;
 const SNOW_CUT = {value: new THREE.Vector3(0, 0, -1)};
 const snowHeight = cm => cm < 4 ? 0 : Math.min(cm, 32) * 0.0105;   // 27 cm: most of the island's edge
 const snowCover = cm => cm <= 0.05 ? 0 : cm < 1 ? 0.15 + 0.3 * cm : cm < 5 ? 0.45 + 0.35 * (cm - 1) / 4 : cm < 15 ? 0.8 + 0.2 * (cm - 5) / 10 : 1;
@@ -3309,7 +3327,7 @@ function stepMood(k){
   cur.bg.lerp(goalBg.setHex(g.bg), k);
   cur.tint.lerp(V_.set(...g.tint), k); cur.cloudCol.lerp(V_.set(...g.cloudCol), k);
   { const cm = SNOW_TEST !== null ? SNOW_TEST : SNOW_CM, kk = Math.min(1, k * 0.25); snowG += (snowCover(cm) - snowG) * kk; snowT += (Math.min(1, Math.max(0, (cm - 5) / 20)) - snowT) * kk;   /* the ground whitens and melts slowly */
-    SNOW_H += (snowHeight(cm) - SNOW_H) * kk; slushG += ((WEATHER[weather].slush || 0) - slushG) * kk * 0.6; SHARED.uSlush.value = slushG; SHARED.uSnow.value = snowG; SHARED.uSnowT.value = snowT; }
+    SNOW_H += (snowHeight(cm) - SNOW_H) * kk; slushG += ((WEATHER[weather].slush || 0) - slushG) * kk * 0.6; SHARED.uSlush.value = slushG; iceG += ((WEATHER[weather].ice || 0) - iceG) * kk * 0.5; SHARED.uIce.value = iceG; SHARED.uSnow.value = snowG; SHARED.uSnowT.value = snowT; }
   for (const key of ['desat','glow','rain','cloud','gull','stars','wind','storm','wet','sun','snow']) cur[key] += (g[key] - cur[key]) * k;
   bg.copy(cur.bg);
   SHARED.uTint.value.copy(cur.tint).multiply(V_.set(1, 1 - 0.07 * sunWarm * cur.sun, 1 - 0.17 * sunWarm * cur.sun)); SHARED.uDesat.value = cur.desat; SHARED.uSun.value = cur.sun;
@@ -3621,7 +3639,7 @@ function loop(now){
     r.quaternion.copy(cam.quaternion); r.scale.set(u.dir, -1, 1);
   });
 
-  CAT.update(dt, t, night ? 'night' : weather === 'partly' ? 'sun' : weather === 'snow' ? 'cloud' : weather === 'sleet' ? 'rain' : weather); trackPrints(dt); stepFlakes(dt, t); if (window.__snowWorld) window.__snowWorld(dt);   /* the cat plays out as on a sunny day */
+  CAT.update(dt, t, night ? 'night' : weather === 'partly' ? 'sun' : weather === 'snow' ? 'cloud' : weather === 'sleet' || weather === 'freezing' ? 'rain' : weather); trackPrints(dt); stepFlakes(dt, t); if (window.__snowWorld) window.__snowWorld(dt);   /* the cat plays out as on a sunny day */
   WORLD.update(dt, t);
 
   // rain: streaks fall through the world, rings where they land
@@ -3710,6 +3728,7 @@ function loop(now){
     cloud: [['M15 39L34.2 39C35.28 39.07 36.36 38.92 37.38 38.57C38.4 38.22 39.34 37.67 40.14 36.95C40.95 36.24 41.61 35.37 42.08 34.4C42.56 33.43 42.83 32.38 42.9 31.3C42.97 30.22 42.82 29.14 42.47 28.12C42.12 27.1 41.57 26.16 40.85 25.36C40.14 24.55 39.27 23.89 38.3 23.42C37.33 22.94 36.28 22.67 35.2 22.6C34.35 20.26 32.74 18.27 30.62 16.95C28.51 15.63 26.02 15.05 23.54 15.3C21.07 15.55 18.74 16.62 16.94 18.34C15.14 20.06 13.96 22.34 13.6 24.8C11.91 25.2 10.41 26.21 9.4 27.62C8.39 29.04 7.93 30.78 8.1 32.51C8.27 34.24 9.06 35.86 10.33 37.05C11.6 38.24 13.26 38.94 15 39 Z','#ffffff',INK,2.8]],
     rain: [['M15 28.76L34.2 28.76C35.28 28.82 36.36 28.68 37.38 28.33C38.4 27.97 39.34 27.43 40.14 26.71C40.95 26 41.61 25.13 42.08 24.16C42.56 23.19 42.83 22.14 42.9 21.06C42.97 19.98 42.82 18.9 42.47 17.88C42.12 16.86 41.57 15.92 40.85 15.11C40.14 14.31 39.27 13.65 38.3 13.17C37.33 12.7 36.28 12.42 35.2 12.36C34.35 10.02 32.74 8.03 30.62 6.71C28.51 5.39 26.02 4.81 23.54 5.06C21.07 5.31 18.74 6.38 16.94 8.1C15.14 9.82 13.96 12.1 13.6 14.56C11.91 14.96 10.41 15.97 9.4 17.38C8.39 18.8 7.93 20.54 8.1 22.27C8.27 24 9.06 25.62 10.33 26.81C11.6 28 13.26 28.7 15 28.76 Z','#ffffff',INK,2.8],['M17.4 33.27L15 39.77',0,'drop',3],['M25.4 33.27L23 39.77',0,'drop',3],['M33.4 33.27L31 39.77',0,'drop',3]],
     sleet: [['M15 28.76L34.2 28.76C35.28 28.82 36.36 28.68 37.38 28.33C38.4 27.97 39.34 27.43 40.14 26.71C40.95 26 41.61 25.13 42.08 24.16C42.56 23.19 42.83 22.14 42.9 21.06C42.97 19.98 42.82 18.9 42.47 17.88C42.12 16.86 41.57 15.92 40.85 15.11C40.14 14.31 39.27 13.65 38.3 13.17C37.33 12.7 36.28 12.42 35.2 12.36C34.35 10.02 32.74 8.03 30.62 6.71C28.51 5.39 26.02 4.81 23.54 5.06C21.07 5.31 18.74 6.38 16.94 8.1C15.14 9.82 13.96 12.1 13.6 14.56C11.91 14.96 10.41 15.97 9.4 17.38C8.39 18.8 7.93 20.54 8.1 22.27C8.27 24 9.06 25.62 10.33 26.81C11.6 28 13.26 28.7 15 28.76 Z','#ffffff',INK,2.8],['M17.4 33.27L15 39.77',0,'drop',3],['M33.4 33.27L31 39.77',0,'drop',3],['M26.4 37C26.4 38.22 25.42 39.2 24.2 39.2C22.98 39.2 22 38.22 22 37C22 35.78 22.98 34.8 24.2 34.8C25.42 34.8 26.4 35.78 26.4 37 Z','#ffffff',INK,1.8]],
+    freezing: [['M15 28.76L34.2 28.76C35.28 28.82 36.36 28.68 37.38 28.33C38.4 27.97 39.34 27.43 40.14 26.71C40.95 26 41.61 25.13 42.08 24.16C42.56 23.19 42.83 22.14 42.9 21.06C42.97 19.98 42.82 18.9 42.47 17.88C42.12 16.86 41.57 15.92 40.85 15.11C40.14 14.31 39.27 13.65 38.3 13.17C37.33 12.7 36.28 12.42 35.2 12.36C34.35 10.02 32.74 8.03 30.62 6.71C28.51 5.39 26.02 4.81 23.54 5.06C21.07 5.31 18.74 6.38 16.94 8.1C15.14 9.82 13.96 12.1 13.6 14.56C11.91 14.96 10.41 15.97 9.4 17.38C8.39 18.8 7.93 20.54 8.1 22.27C8.27 24 9.06 25.62 10.33 26.81C11.6 28 13.26 28.7 15 28.76 Z','#ffffff',INK,2.8],['M17.4 33.27L15 39.77',0,'drop',3],['M33.4 33.27L31 39.77',0,'drop',3],['M24.4 33.6L27 37.4L24.4 41.2L21.8 37.4 Z','#dff3ff',INK,1.7]],
     storm: [['M15 33L34.2 33C35.28 33.07 36.36 32.92 37.38 32.57C38.4 32.22 39.34 31.67 40.14 30.95C40.95 30.24 41.61 29.37 42.08 28.4C42.56 27.43 42.83 26.38 42.9 25.3C42.97 24.22 42.82 23.14 42.47 22.12C42.12 21.1 41.57 20.16 40.85 19.36C40.14 18.55 39.27 17.89 38.3 17.42C37.33 16.94 36.28 16.67 35.2 16.6C34.35 14.26 32.74 12.27 30.62 10.95C28.51 9.63 26.02 9.05 23.54 9.3C21.07 9.55 18.74 10.62 16.94 12.34C15.14 14.06 13.96 16.34 13.6 18.8C11.91 19.2 10.41 20.21 9.4 21.62C8.39 23.04 7.93 24.78 8.1 26.51C8.27 28.24 9.06 29.86 10.33 31.05C11.6 32.24 13.26 32.94 15 33 Z','#ffffff',INK,2.8],['M25.2 32.4L20.6 39.6L25.4 39.6L22.6 46L29.8 37.2L25 37.2L27.6 32.4L25.2 32.4 Z','#ffd25e','#e2a23a',1.8]],
     snow: [['M15 33L34.2 33C35.28 33.07 36.36 32.92 37.38 32.57C38.4 32.22 39.34 31.67 40.14 30.95C40.95 30.24 41.61 29.37 42.08 28.4C42.56 27.43 42.83 26.38 42.9 25.3C42.97 24.22 42.82 23.14 42.47 22.12C42.12 21.1 41.57 20.16 40.85 19.36C40.14 18.55 39.27 17.89 38.3 17.42C37.33 16.94 36.28 16.67 35.2 16.6C34.35 14.26 32.74 12.27 30.62 10.95C28.51 9.63 26.02 9.05 23.54 9.3C21.07 9.55 18.74 10.62 16.94 12.34C15.14 14.06 13.96 16.34 13.6 18.8C11.91 19.2 10.41 20.21 9.4 21.62C8.39 23.04 7.93 24.78 8.1 26.51C8.27 28.24 9.06 29.86 10.33 31.05C11.6 32.24 13.26 32.94 15 33 Z','#ffffff',INK,2.8],['M20.2 41C20.2 42.22 19.22 43.2 18 43.2C16.78 43.2 15.8 42.22 15.8 41C15.8 39.78 16.78 38.8 18 38.8C19.22 38.8 20.2 39.78 20.2 41 Z','#ffffff',INK,1.8],['M27.2 44C27.2 45.22 26.22 46.2 25 46.2C23.78 46.2 22.8 45.22 22.8 44C22.8 42.78 23.78 41.8 25 41.8C26.22 41.8 27.2 42.78 27.2 44 Z','#ffffff',INK,1.8],['M34.2 41C34.2 42.22 33.22 43.2 32 43.2C30.78 43.2 29.8 42.22 29.8 41C29.8 39.78 30.78 38.8 32 38.8C33.22 38.8 34.2 39.78 34.2 41 Z','#ffffff',INK,1.8]],
     fog: [['M15 31L34.2 31C35.28 31.07 36.36 30.92 37.38 30.57C38.4 30.22 39.34 29.67 40.14 28.95C40.95 28.24 41.61 27.37 42.08 26.4C42.56 25.43 42.83 24.38 42.9 23.3C42.97 22.22 42.82 21.14 42.47 20.12C42.12 19.1 41.57 18.16 40.85 17.36C40.14 16.55 39.27 15.89 38.3 15.42C37.33 14.94 36.28 14.67 35.2 14.6C34.35 12.26 32.74 10.27 30.62 8.95C28.51 7.63 26.02 7.05 23.54 7.3C21.07 7.55 18.74 8.62 16.94 10.34C15.14 12.06 13.96 14.34 13.6 16.8C11.91 17.2 10.41 18.21 9.4 19.62C8.39 21.04 7.93 22.78 8.1 24.51C8.27 26.24 9.06 27.86 10.33 29.05C11.6 30.24 13.26 30.94 15 31 Z','#ffffff',INK,2.8],['M8 37L40 37',0,INK,3],['M13 43L35 43',0,INK,3]],
@@ -3734,7 +3753,7 @@ function loop(now){
     if (c === 3) return {ic: 'cloud', say: 'Cloudy', game: 'cloud'};
     if (c === 45 || c === 48) return {ic: 'fog', say: 'Fog', game: 'cloud'};
     if (c >= 51 && c <= 57) return {ic: 'rain', say: 'Drizzle', game: 'rain'};
-    if (c === 56 || c === 57 || c === 66 || c === 67) return {ic: 'sleet', say: c < 60 ? 'Freezing drizzle' : 'Freezing rain', game: 'sleet'};
+    if (c === 56 || c === 57 || c === 66 || c === 67) return {ic: 'freezing', say: c < 60 ? 'Freezing drizzle' : 'Freezing rain', game: 'freezing'};
     if (c >= 61 && c <= 65) return {ic: 'rain', say: c === 65 ? 'Heavy rain' : 'Rain', game: 'rain'};
     if ((c >= 71 && c <= 77) || c === 85 || c === 86) return {ic: 'snow', say: c === 75 || c === 86 ? 'Heavy snow' : c === 71 ? 'Light snow' : c === 77 ? 'Snow grains' : 'Snow', game: 'snow',
       rate: {71: 0.45, 73: 0.75, 75: 1, 77: 0.35, 85: 0.6, 86: 0.95}[c]};
@@ -3877,7 +3896,7 @@ body.wx-sheeton .wx-mini{opacity:1} body.wx-sheeton .wx-dim{opacity:1; pointer-e
   function render(){
     const p = selected(), d = dataOf(p) || sample();
     const isNight = night;                          // the island's own day / night
-    lightDrops = isNight || weather === 'storm' || weather === 'sleet';
+    lightDrops = isNight || weather === 'storm' || weather === 'sleet' || weather === 'freezing';
     // light skies (day: sun, partly, clouds): dark blue writing, no shade; dark skies (night, rain, storm): white writing over a soft shade
     const ink = !isNight && (weather === 'sun' || weather === 'partly' || weather === 'cloud' || weather === 'snow');
     root.classList.toggle('ink', ink); shade.classList.toggle('off', ink);
