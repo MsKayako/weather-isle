@@ -98,6 +98,7 @@ canvas#fx{position:absolute; inset:0; width:100%; height:100%; pointer-events:no
       <button data-w="cloud">Clouds</button>
       <button data-w="rain">Rain</button>
       <button data-w="storm">Storm</button>
+      <button data-w="snow">Snow</button>
     </div>
     <div class="modes stack" role="group" aria-label="Day or night">
       <button data-t="13">Day</button>
@@ -401,7 +402,7 @@ if (!SHOW_CASTLE) for (const b of AO) b[2] = 0;         // no castle, no shade u
 
 /* ---------- Renderer ---------- */
 const canvas = $('scene');
-const renderer = new THREE.WebGLRenderer({canvas, antialias: true, stencil: true});   // stencil: the cat seen through doorways
+const renderer = new THREE.WebGLRenderer({canvas, antialias: true, stencil: true});    // stencil: the cat seen through doorways
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const scene = new THREE.Scene();
@@ -415,6 +416,9 @@ const LD0 = LD.clone();                                          // the midday s
 const SHARED = {
   uTint:     {value: new THREE.Vector3(1, 1, 1)},
   uDesat:    {value: 0},
+  uSnow:     {value: 0},
+  uSnowT:    {value: 0},
+  uPrints:   {value: Array.from({length: 16}, () => new THREE.Vector3(0, 0, 0))},
   uFlash:    {value: 0},
   uTime:     {value: 0},
   uLd:       {value: LD},
@@ -486,6 +490,10 @@ const mat = new THREE.ShaderMaterial({
     ${CLOUD_SHADOW_GLSL}
     uniform sampler2D uAtlas;
     varying vec3 vC, vP, vN, vU; varying vec2 vI;
+    uniform float uSnow, uSnowT; uniform vec3 uPrints[16];
+    float snH(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float snN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(snH(i), snH(i + vec2(1.0, 0.0)), f.x), mix(snH(i + vec2(0.0, 1.0)), snH(i + vec2(1.0, 1.0)), f.x), f.y); }
     float aoBox(vec3 p, vec3 n, vec3 mn, vec3 mx, vec2 k){
       vec3 c = (mn + mx) * 0.5, h = (mx - mn) * 0.5, q = abs(p - c) - h;
       float d = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
@@ -500,7 +508,19 @@ const mat = new THREE.ShaderMaterial({
       float occ = 1.0 - keep;
       vec3 base = vU.z > 0.5 ? texture2D(uAtlas, vU.xy).rgb : vC;
       vec3 c = base * mix(vec3(1.0), vec3(0.64, 0.76, 0.70), occ);
-      c *= mix(1.0, 0.86, uWet * max(n.y, 0.0));                  // wet tops go a little darker
+      float sn = 0.0;                                              // snow: patches first (a dusting), then the whole top, then a thick rim over the edges
+      if (uSnow > 0.002){
+        vec2 q = vP.xz * 1.7; float nz = 0.55 * snN(q) + 0.3 * snN(q * 2.7 + 7.1) + 0.15 * snN(q * 6.3 + 3.7);
+        float thr = 1.0 - uSnow * 1.08;
+        if (n.y > 0.5 && vP.y > -0.02) sn = smoothstep(thr, thr + 0.05, nz) * (0.78 + 0.22 * smoothstep(0.25, 0.6, uSnow));
+        else if (n.y < 0.5){ float lip = 0.03 + 0.09 * uSnowT + 0.012 * sin(vP.x * 9.0 + vP.z * 7.0) + 0.008 * sin(vP.x * 23.0 - vP.z * 17.0);
+          sn = step(-lip, vP.y) * smoothstep(0.72, 0.92, uSnow); }
+        vec3 sc = vec3(0.95, 0.975, 1.0);
+        for (int i = 0; i < 16; i++){ vec3 pp = uPrints[i]; if (pp.z > 0.0){ float d = length((vP.xz - pp.xy) * vec2(1.0, 1.35));   // paw prints in deep snow
+          sc = mix(sc, vec3(0.74, 0.82, 0.9), pp.z * (1.0 - smoothstep(0.05, 0.07, d)) * step(0.5, n.y)); } }
+        c = mix(c, sc, sn);
+      }
+      c *= mix(1.0, 0.86, uWet * max(n.y, 0.0) * (1.0 - sn));                  // wet tops go a little darker
       float lit = clamp(dot(n, uLd) * 3.0, 0.0, 1.0);
       c *= mix(vec3(1.0), vec3(0.64, 0.76, 0.70), castShadow(vP, n) * 0.78 * uSun);
       // walls that turn away from the sun as it moves get darker, walls that turn towards it brighten a little
@@ -936,8 +956,9 @@ const CAT = (() => {
   const size = TEX / K * SC;
   const mat = new THREE.MeshBasicMaterial({map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide});
   const CAT_DEPTH = {uOn: {value: 0}, uD: {value: 0.5}}, CATD = new THREE.Vector3(), CATV = new THREE.Vector3();
-  mat.onBeforeCompile = sh => { sh.uniforms.uDepthOn = CAT_DEPTH.uOn; sh.uniforms.uDepthAt = CAT_DEPTH.uD;
-    sh.fragmentShader = 'uniform float uDepthOn, uDepthAt;\n' + sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\n  gl_FragDepth = uDepthOn > 0.5 ? uDepthAt : gl_FragCoord.z;'); };
+  mat.onBeforeCompile = sh => { sh.uniforms.uDepthOn = CAT_DEPTH.uOn; sh.uniforms.uDepthAt = CAT_DEPTH.uD; sh.uniforms.uSnowCut = SNOW_CUT;
+    sh.vertexShader = 'varying vec3 vWP;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n  vWP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = 'uniform float uDepthOn, uDepthAt; uniform vec3 uSnowCut; varying vec3 vWP;\n' + sh.fragmentShader.replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  if (uSnowCut.z > 0.0){ float dx = (vWP.x - uSnowCut.x) / 0.55; if (vWP.y < uSnowCut.y + uSnowCut.z * (1.0 - min(1.0, dx * dx))) discard; }').replace('#include <dithering_fragment>', '#include <dithering_fragment>\n  gl_FragDepth = uDepthOn > 0.5 ? uDepthAt : gl_FragCoord.z;'); };
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size).translate(0, size / 2 - FOOT / TEX * size, 0), mat);
   mesh.renderOrder = 3; scene.add(mesh); mat.alphaTest = 0.02;
   // a soft shadow on the grass
@@ -1381,6 +1402,7 @@ const CAT = (() => {
     // weather light: the eyes stay bright, everything is a little tinted
     tint.setRGB(Math.min(1, 0.45 + cur.tint.x * 0.55 + flash * 0.3), Math.min(1, 0.45 + cur.tint.y * 0.55 + flash * 0.3), Math.min(1, 0.45 + cur.tint.z * 0.55 + flash * 0.3));
     mat.color.copy(tint);
+    { const deep = CAV && !s.held && !s.fall && s.pos.y < 0.05 && SNOW_H > 0.01; SNOW_CUT.value.set(s.pos.x, SNOW_H * 0.42, deep ? SNOW_H * 0.6 : -1); }   /* in deep snow: hidden below a rounded bank, higher in the middle */
     if (CAV && !s.held){ mat.depthTest = true; mat.depthFunc = THREE.LessEqualDepth; mat.depthWrite = true; mat.stencilWrite = false; mesh.renderOrder = 99990; if (mat.alphaTest !== 0.02){ mat.alphaTest = 0.02; mat.needsUpdate = true; }
       CATD.copy(s.pos); CATD.y += 0.38 * mesh.scale.y; CATD.addScaledVector(CATV.copy(DV_).normalize(), ACTS[s.at] === 'perch' && !s.path.length ? 1.0 : 0.25); CATD.project(cam); CAT_DEPTH.uD.value = CATD.z * 0.5 + 0.5; CAT_DEPTH.uOn.value = 1;
       let mref = 0; try { const it = [s.path[0], s.at].find(n => n && WORLD.frontMask(n)); const P0 = it && NODES[it]; if (P0 && s.pos.z > P0[2] - 0.3 && Math.hypot(P0[0] - s.pos.x, P0[2] - s.pos.z) < 1.05) mref = WORLD.frontMask(it); } catch (e){}
@@ -1623,7 +1645,76 @@ const WORLD = (() => {
     if (floorMesh){ floorMesh.geometry.dispose(); floorMesh.geometry = g; } else { floorMesh = new THREE.Mesh(g, mat); scene.add(floorMesh); }
     for (const f of FLOWERS) f.visible = false;                    // the wildflowers are pieces you place now
     rebuildShore();
+    buildSnow();
   }
+  const SNOW_MOUNDS = Array.from({length: 36}, () => new THREE.Vector3(0, 0, 0)), SNQ = new THREE.Vector3(), MOUND_AT = [[-0.45, -0.3], [0.42, -0.1], [-0.05, 0.48]];   // three soft bumps over each patch of flowers
+  const snowMat = new THREE.ShaderMaterial({uniforms: {...SHARED, uH: {value: 0}, uMounds: {value: SNOW_MOUNDS}, uCat: {value: new THREE.Vector3(0, 0, 0)}},
+    vertexShader: `attribute float aT; attribute vec4 aOut; uniform float uH; uniform vec3 uMounds[36]; uniform vec3 uCat; varying vec3 vP, vN; varying float vM;
+      float hAt(vec2 p){ float h = uH, m = 0.0;
+        for (int i = 0; i < 36; i++){ vec3 q = uMounds[i]; if (q.z > 0.0){ vec2 d = (p - q.xy) * vec2(1.0, 1.25); m += q.z * 0.24 * exp(-dot(d, d) / 0.16); } }
+        if (uCat.z > 0.0){ vec2 d = p - uCat.xy; float rim = min(0.15, 0.05 + 0.4 * uH) * uCat.z;
+          m -= 0.55 * uH * uCat.z * exp(-dot(d, d) / 0.05);                                   // the hollow it stands in
+          vec2 b = vec2(d.x / 0.42, (d.y - 0.2) / 0.13); m += rim * exp(-dot(b, b)); }        // the snow it pushes up in front of it
+        return h + m; }
+      void main(){ vec3 p = position; float h = hAt(p.xz); vM = h - uH * 1.1;
+        p.y = aT * h; p.xz += aOut.xz * aOut.y * min(1.0, h * 7.0);
+        vec3 n = normal;
+        if (aOut.w > 0.5){ float e = 0.06; n = normalize(vec3(hAt(p.xz - vec2(e, 0.0)) - hAt(p.xz + vec2(e, 0.0)), 2.0 * e, hAt(p.xz - vec2(0.0, e)) - hAt(p.xz + vec2(0.0, e)))); }
+        else n = normalize(vec3(aOut.x, 0.9 - aT * 1.4, aOut.z));
+        vN = n; vec4 wp = modelMatrix * vec4(p, 1.0); vP = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`,
+    fragmentShader: `uniform vec3 uTint; uniform float uDesat, uFlash, uSun, uH, uSnow; uniform vec3 uPrints[16]; varying vec3 vP, vN; varying float vM;
+      ${CLOUD_SHADOW_GLSL}
+      void main(){
+        if (uH < 0.004 && vM < 0.012) discard;                     // thin snow: only the mounds stand up from the ground
+        vec3 n = normalize(vN);
+        vec3 Ls = normalize(vec3(-0.45, 0.8, 0.55));                // the pieces' soft light: slopes turned away go blue-grey, so the mounds and the edges read
+        float lk = dot(n, Ls); vec3 c = mix(vec3(0.80, 0.87, 0.94), vec3(0.975, 0.99, 1.0), smoothstep(0.6, 0.625, lk));   /* two flat tones, a crisp edge between them (like the drawings) */
+        c = mix(vec3(0.72, 0.81, 0.9), c, smoothstep(0.3, 0.325, lk));
+        for (int i = 0; i < 16; i++){ vec3 pp = uPrints[i]; if (pp.z > 0.0){ float d = length((vP.xz - pp.xy) * vec2(1.0, 1.35));
+          c = mix(c, vec3(0.72, 0.8, 0.89), pp.z * (1.0 - smoothstep(0.05, 0.07, d)) * step(0.7, n.y)); } }
+        c *= mix(vec3(1.0), vec3(0.74, 0.83, 0.9), castShadow(vP, n) * 0.7 * uSun);
+        c *= 1.0 - 0.18 * cloudShadow(vP) * (0.15 + 0.85 * uSun);
+        float l = dot(c, vec3(0.299, 0.587, 0.114)); c = mix(c, vec3(l), uDesat) * uTint;
+        c += uFlash * 0.4 * vec3(0.85, 0.9, 1.0);
+        gl_FragColor = vec4(c, 1.0);
+      }`});
+  let snowMesh = null;
+  function buildSnow(){
+    const P = [], N = [], A = [], O = [], G = 8, D = T / G;
+    const v = (x, y, z, n, t, o) => { P.push(x, y, z); N.push(...n); A.push(t); O.push(...o); };
+    const quad = (a, b, c, d) => { for (const q of [a, b, c, a, c, d]) v(...q); };
+    for (const [k] of tiles){
+      const [i, j] = k.split(',').map(Number), x0 = OX + i * T, z0 = OZ + j * T, nb = (di, dj) => tiles.has(key(i + di, j + dj));
+      for (let a = 0; a < G; a++) for (let b = 0; b < G; b++){ const xa = x0 + a * D, xb = xa + D, za = z0 + b * D, zb = za + D, up = [0, 1, 0], o = [0, 0, 0, 1];
+        quad([xa, 1, za, up, 1, o], [xb, 1, za, up, 1, o], [xb, 1, zb, up, 1, o], [xa, 1, zb, up, 1, o]); }
+      // the open edges: three rows from the grass up to the top, bulging out a little (the snow overhangs) then curling back in
+      const ROWS = [[0, 0.02], [0.72, 0.075], [1, 0]];
+      const side = (dx, dz, ex, ez, sx, sz) => { for (let a = 0; a < G; a++) for (let r = 0; r < 2; r++){
+        const p0 = [sx + ex * a * D, sz + ez * a * D], p1 = [sx + ex * (a + 1) * D, sz + ez * (a + 1) * D], [t0, o0] = ROWS[r], [t1, o1] = ROWS[r + 1], n = [dx, 0, dz];
+        quad([p0[0], t0, p0[1], n, t0, [dx, o0, dz, 0]], [p1[0], t0, p1[1], n, t0, [dx, o0, dz, 0]], [p1[0], t1, p1[1], n, t1, [dx, o1, dz, 0]], [p0[0], t1, p0[1], n, t1, [dx, o1, dz, 0]]); } };
+      if (!nb(1, 0)) side(1, 0, 0, 1, x0 + T, z0);
+      if (!nb(-1, 0)) side(-1, 0, 0, 1, x0, z0);
+      if (!nb(0, 1)) side(0, 1, 1, 0, x0, z0 + T);
+      if (!nb(0, -1)) side(0, -1, 1, 0, x0, z0);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+    g.setAttribute('aT', new THREE.Float32BufferAttribute(A, 1)); g.setAttribute('aOut', new THREE.Float32BufferAttribute(O, 4));
+    if (snowMesh){ snowMesh.geometry.dispose(); snowMesh.geometry = g; } else { snowMesh = new THREE.Mesh(g, snowMat); snowMesh.frustumCulled = false; snowMat.side = THREE.DoubleSide; scene.add(snowMesh); }
+  }
+  // each frame: the snow's height, the flowers going under their mounds (they come back when it melts)
+  window.__snowWorld = dt => {
+    if (!snowMesh) return;
+    snowMat.uniforms.uH.value = SNOW_H;
+    { const p = CAT.pos(), c = snowMat.uniforms.uCat.value, k = p.y < 0.05 && SNOW_H > 0.01 ? 1 : 0; c.z += (k - c.z) * Math.min(1, dt * 6); c.x = p.x; c.y = p.z; }
+    const on = clamp((snowG - 0.5) * 3, 0, 1); let n = 0;
+    for (const r of S.items){ if (r.id !== 'flower') continue;
+      const e = FRONT.get(r.u); if (e){ e.g.visible = on < 0.5; if (e.sg) e.sg.visible = on < 0.5; }
+      pos3(r, SNQ); for (const [ox, oz] of MOUND_AT) if (n < 36) SNOW_MOUNDS[n++].set(SNQ.x + ox * (r.s || 1), SNQ.z + oz * (r.s || 1), on); }
+    for (; n < 36; n++) SNOW_MOUNDS[n].set(0, 0, 0);
+    snowMesh.visible = SNOW_H > 0.002 || on > 0.01;
+  };
+  window.__snowDbg = {SNOW_MOUNDS, snowMat, mesh: () => snowMesh};   /* (for checks from the console) */
   function rebuildShore(){                                          // the foam around the shore follows the tiles
     const W = DR.w * DR.ppu, H = DR.h * DR.ppu, data = shoreTex.image.data;
     for (let jy = 0; jy < H; jy++) for (let ix = 0; ix < W; ix++){
@@ -1899,7 +1990,7 @@ const WORLD = (() => {
     side, transparent: over, depthWrite: !over, userData: {kind, side}, uniforms: {...SHARED, uKind: {value: kind}, uMap: {value: null}},
     vertexShader: `attribute vec3 color; varying vec3 vC, vN, vP, vL; varying vec2 vUv; void main(){ vC = color; vL = position; vUv = uv; vec4 wp = modelMatrix * vec4(position, 1.0); vP = wp.xyz;
       vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * wp; }`,
-    fragmentShader: `uniform vec3 uTint; uniform float uDesat, uSun; uniform int uKind; uniform sampler2D uMap; varying vec3 vC, vN, vP, vL; varying vec2 vUv;
+    fragmentShader: `uniform vec3 uTint; uniform float uDesat, uSun, uSnow; uniform int uKind; uniform sampler2D uMap; varying vec3 vC, vN, vP, vL; varying vec2 vUv;
       ${CLOUD_SHADOW_GLSL}
       void main(){
         vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
@@ -1934,6 +2025,7 @@ const WORLD = (() => {
         c *= mix(0.9, 1.0, smoothstep(0.0, 0.15, vL.y));                                                                        // where it meets the floor
         c *= 0.97 + 0.05 * smoothstep(0.0, 1.4, vL.y);                                                                          // lighter higher up
         vec3 H = normalize(L + V); c += vec3(1.0, 0.98, 0.94) * 0.05 * pow(max(dot(n, H), 0.0), 16.0);
+        { float up = smoothstep(0.5, 0.8, n.y) * smoothstep(0.3, 0.75, uSnow); c = mix(c, vec3(0.95, 0.975, 1.0) * (0.92 + 0.08 * k), up * 0.94); }   // snow settles on what faces up
         c *= 1.0 - 0.15 * cloudShadow(vP) * uSun;
         c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, 1.14);                                                     // as rich as the drawings
         float g = dot(c, vec3(0.299, 0.587, 0.114)); gl_FragColor = vec4(mix(c, vec3(g), uDesat) * uTint, 1.0);
@@ -3158,15 +3250,35 @@ const WEATHER = {
   storm: {day:{bg:0x4b616c, tint:[0.63,0.68,0.75], desat:0.42}, night:{bg:0x101923, tint:[0.23,0.27,0.37], desat:0.4},
           rain:1,   cloud:1, cloudCol:[0.55,0.59,0.66], gull:0, stars:0,   wind:1.7,  storm:1, wet:1,   glowDay:0.6, sun:0.2},
 };
-const TEMP = {sun:19, partly:17, cloud:14, rain:10, storm:9};
+const TEMP = {sun:19, partly:17, cloud:14, rain:10, storm:9, snow:-1};
+// falling snow: a pale, soft sky with slow flakes drifting down; the snow on the ground comes from its depth in cm (live, or the test slider)
+WEATHER.snow = {day:{bg:0xb3c7d0, tint:[0.97,0.98,1.0], desat:0.14}, night:{bg:0x26364d, tint:[0.40,0.46,0.64], desat:0.3},
+          rain:0,   cloud:0.8, cloudCol:[0.94,0.96,0.98], gull:0, stars:0,  wind:0.3,  storm:0, wet:0,   glowDay:0.2, sun:0.4, snow:1};
+let SNOW_CM = 0, SNOW_TEST = null, SNOW_RATE = 0.75, snowG = 0, snowT = 0, SNOW_H = 0;
+const SNOW_CUT = {value: new THREE.Vector3(0, 0, -1)};
+const snowHeight = cm => cm < 4 ? 0 : Math.min(cm, 32) * 0.0105;   // 27 cm: most of the island's edge
+const snowCover = cm => cm <= 0.05 ? 0 : cm < 1 ? 0.15 + 0.3 * cm : cm < 5 ? 0.45 + 0.35 * (cm - 1) / 4 : cm < 15 ? 0.8 + 0.2 * (cm - 5) / 10 : 1;
+const PRINTS = []; let lastPrint = null, printSide = 1;
+function trackPrints(dt){                                        // over 5 cm the cat leaves prints behind it, which fade in a minute
+  const P = SHARED.uPrints.value, p = CAT.pos();
+  for (const q of PRINTS) q.a -= dt / 60;
+  while (PRINTS.length && PRINTS[0].a <= 0) PRINTS.shift();
+  if (snowG > 0.78 && p.y < 0.05){
+    if (!lastPrint) lastPrint = p.clone();
+    const dx = p.x - lastPrint.x, dz = p.z - lastPrint.z, d = Math.hypot(dx, dz);
+    if (d > 0.3){ printSide = -printSide; const nx = -dz / d * 0.08 * printSide, nz = dx / d * 0.08 * printSide;
+      PRINTS.push({x: p.x + nx, z: p.z + nz, a: 1}); if (PRINTS.length > 16) PRINTS.shift(); lastPrint.copy(p); }
+  } else lastPrint = null;
+  for (let i = 0; i < 16; i++){ const q = PRINTS[i]; if (q) P[i].set(q.x, q.z, Math.max(0, q.a) * snowG); else P[i].set(0, 0, 0); }
+}
 const cur = {bg:new THREE.Color(0x64b6c8), tint:new THREE.Vector3(1,1,1), cloudCol:new THREE.Vector3(1,1,1),
-             desat:0, glow:0, rain:0, cloud:0, gull:1, stars:0, wind:0.25, storm:0, wet:0, sun:1};
+             desat:0, glow:0, rain:0, cloud:0, gull:1, stars:0, wind:0.25, storm:0, wet:0, sun:1, snow:0};
 const goalBg = new THREE.Color(), V_ = new THREE.Vector3(), phone = $('phone');
 let weather = 'sun', night = false;
 function goal(){
   const w = WEATHER[weather], t = night ? w.night : w.day;
   return {bg:t.bg, tint:t.tint, desat:t.desat, glow: night ? 1 : w.glowDay, rain:w.rain, cloud:w.cloud, cloudCol:w.cloudCol,
-          gull: night ? 0 : w.gull, stars: night ? w.stars : 0, wind:w.wind, storm:w.storm, wet:w.wet, sun: w.sun * (night ? 0.5 : 1)};
+          gull: night ? 0 : w.gull, stars: night ? w.stars : 0, wind:w.wind, storm:w.storm, wet:w.wet, sun: w.sun * (night ? 0.5 : 1), snow: (w.snow || 0) * SNOW_RATE};
 }
 function setMood(w, n, instant = false){
   weather = w; night = n;
@@ -3183,7 +3295,9 @@ function stepMood(k){
   const g = goal();
   cur.bg.lerp(goalBg.setHex(g.bg), k);
   cur.tint.lerp(V_.set(...g.tint), k); cur.cloudCol.lerp(V_.set(...g.cloudCol), k);
-  for (const key of ['desat','glow','rain','cloud','gull','stars','wind','storm','wet','sun']) cur[key] += (g[key] - cur[key]) * k;
+  { const cm = SNOW_TEST !== null ? SNOW_TEST : SNOW_CM, kk = Math.min(1, k * 0.25); snowG += (snowCover(cm) - snowG) * kk; snowT += (Math.min(1, Math.max(0, (cm - 5) / 20)) - snowT) * kk;   /* the ground whitens and melts slowly */
+    SNOW_H += (snowHeight(cm) - SNOW_H) * kk; SHARED.uSnow.value = snowG; SHARED.uSnowT.value = snowT; }
+  for (const key of ['desat','glow','rain','cloud','gull','stars','wind','storm','wet','sun','snow']) cur[key] += (g[key] - cur[key]) * k;
   bg.copy(cur.bg);
   SHARED.uTint.value.copy(cur.tint).multiply(V_.set(1, 1 - 0.07 * sunWarm * cur.sun, 1 - 0.17 * sunWarm * cur.sun)); SHARED.uDesat.value = cur.desat; SHARED.uSun.value = cur.sun;
   mat.uniforms.uGlow.value = cur.glow; mat.uniforms.uWet.value = cur.wet;
@@ -3224,6 +3338,30 @@ function strike(){
   bolt = {pts, life: 0.32, branch: Math.floor(pts.length * (0.3 + Math.random() * 0.3))};
   flash = 1;
   CAT.scare();                                         // the cat jumps out of its skin
+}
+const NF = 1600, flakePos = new Float32Array(NF * 3), flakeS = new Float32Array(NF), FLK = Array.from({length: NF}, () => ({y: -99, v: 1, p: Math.random() * 6.28, f: 0.6 + Math.random() * 0.8}));
+for (let i = 0; i < NF; i++) flakeS[i] = 0.045 + Math.pow(Math.random(), 2) * 0.09;
+const flakeGeo = new THREE.BufferGeometry(); flakeGeo.setAttribute('position', new THREE.BufferAttribute(flakePos, 3)); flakeGeo.setAttribute('aS', new THREE.BufferAttribute(flakeS, 1));
+const flakeMat = new THREE.ShaderMaterial({transparent: true, depthWrite: false, uniforms: {uTint: SHARED.uTint, uA: {value: 0}, uVH: {value: 800}},
+  vertexShader: `attribute float aS; uniform float uVH; void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_PointSize = max(1.0, aS * projectionMatrix[1][1] * uVH * 0.5 / gl_Position.w); }`,
+  fragmentShader: `uniform vec3 uTint; uniform float uA; void main(){ float d = length(gl_PointCoord - 0.5); float a = 1.0 - smoothstep(0.28, 0.5, d); if (a < 0.01) discard; gl_FragColor = vec4(mix(vec3(1.0), uTint, 0.55), a * uA); }`});
+const flakes = new THREE.Points(flakeGeo, flakeMat); flakes.frustumCulled = false; flakes.renderOrder = 4; scene.add(flakes);
+function stepFlakes(dt, t){
+  flakeMat.uniforms.uA.value = Math.min(1, cur.snow * 1.6); flakes.visible = cur.snow > 0.01;
+  flakeMat.uniforms.uVH.value = renderer.domElement.height;
+  const active = Math.round(NF * clamp(cur.snow, 0, 1)), want = NF * (WEATHER[weather].snow || 0) * SNOW_RATE;
+  const S0 = (CLOUD_ROW_Y[3] - 1.2) * Math.cos(EL) - CLOUD_ROW_P[3] * Math.sin(EL), wx = 0.35 * cur.wind;
+  for (let i = 0; i < NF; i++){ const f = FLK[i], o = i * 3;
+    if (f.y < -50){ if (i >= want){ flakePos[o + 1] = -99; continue; }             // no new flakes once the snow stops; the falling ones land
+      f.x = PIV.x + PCX + (Math.random() * 2 - 1) * 14; f.z = PIV.z - 12 + Math.random() * 36;
+      const top = (S0 + (f.z - PIV.z) * Math.sin(EL)) / Math.cos(EL), L = landAt(f.x, f.z)[0]; f.land = L >= 0 ? L + SNOW_H : L;
+      if (top <= f.land + 0.5){ flakePos[o + 1] = -99; continue; }
+      f.y = f.fresh === undefined ? f.land + Math.random() * (top - f.land) : top; f.fresh = 0; f.v = 0.55 + Math.random() * 0.5; }
+    f.y -= f.v * f.f * dt; f.x += (wx + 0.22 * Math.sin(t * 1.1 * f.f + f.p)) * dt; f.z += 0.08 * Math.cos(t * 0.8 + f.p) * dt;
+    if (f.y <= f.land){ f.y = -99; flakePos[o + 1] = -99; continue; }
+    flakePos[o] = f.x; flakePos[o + 1] = f.y; flakePos[o + 2] = f.z;
+  }
+  flakeGeo.attributes.position.needsUpdate = true; void active;
 }
 function drawFx(t, dt){
   const w = fx.width, h = fx.height, k = w / 400;
@@ -3469,7 +3607,7 @@ function loop(now){
     r.quaternion.copy(cam.quaternion); r.scale.set(u.dir, -1, 1);
   });
 
-  CAT.update(dt, t, night ? 'night' : weather === 'partly' ? 'sun' : weather);   /* the cat plays out as on a sunny day */
+  CAT.update(dt, t, night ? 'night' : weather === 'partly' ? 'sun' : weather === 'snow' ? 'cloud' : weather); trackPrints(dt); stepFlakes(dt, t); if (window.__snowWorld) window.__snowWorld(dt);   /* the cat plays out as on a sunny day */
   WORLD.update(dt, t);
 
   // rain: streaks fall through the world, rings where they land
@@ -3581,7 +3719,8 @@ function loop(now){
     if (c === 45 || c === 48) return {ic: 'fog', say: 'Fog', game: 'cloud'};
     if (c >= 51 && c <= 57) return {ic: 'rain', say: 'Drizzle', game: 'rain'};
     if (c >= 61 && c <= 67) return {ic: 'rain', say: c === 65 || c === 67 ? 'Heavy rain' : c === 66 || c === 67 ? 'Freezing rain' : 'Rain', game: 'rain'};
-    if ((c >= 71 && c <= 77) || c === 85 || c === 86) return {ic: 'snow', say: 'Snow', game: 'cloud'};
+    if ((c >= 71 && c <= 77) || c === 85 || c === 86) return {ic: 'snow', say: c === 75 || c === 86 ? 'Heavy snow' : c === 71 ? 'Light snow' : c === 77 ? 'Snow grains' : 'Snow', game: 'snow',
+      rate: {71: 0.45, 73: 0.75, 75: 1, 77: 0.35, 85: 0.6, 86: 0.95}[c]};
     if (c >= 80 && c <= 82) return {ic: 'rain', say: 'Showers', game: 'rain'};
     if (c >= 95) return {ic: 'storm', say: 'Storm', game: 'storm'};
     return {ic: 'cloud', say: 'Cloudy', game: 'cloud'};
@@ -3612,9 +3751,9 @@ function loop(now){
   }
   async function load(p){
     const u = 'https://api.open-meteo.com/v1/forecast?latitude=' + p.lat + '&longitude=' + p.lon +
-      '&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=14';
+      '&current=temperature_2m,weather_code,snow_depth,snowfall&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=14';
     const j = await getJSON(u), d = j.daily;
-    const data = {t: Date.now(), temp: j.current.temperature_2m, code: j.current.weather_code, off: j.utc_offset_seconds,
+    const data = {t: Date.now(), temp: j.current.temperature_2m, code: j.current.weather_code, off: j.utc_offset_seconds, depth: (j.current.snow_depth || 0) * 100,
       days: d.time.map((iso, i) => ({iso, code: d.weather_code[i], hi: d.temperature_2m_max[i], lo: d.temperature_2m_min[i], rain: d.precipitation_probability_max[i] || 0}))};
     wx[idOf(p)] = data; ls.set('isle-wx', wx); return data;
   }
@@ -3722,9 +3861,10 @@ body.wx-sheeton .wx-mini{opacity:1} body.wx-sheeton .wx-dim{opacity:1; pointer-e
     const isNight = night;                          // the island's own day / night
     lightDrops = isNight || weather === 'storm';
     // light skies (day: sun, partly, clouds): dark blue writing, no shade; dark skies (night, rain, storm): white writing over a soft shade
-    const ink = !isNight && (weather === 'sun' || weather === 'partly' || weather === 'cloud');
+    const ink = !isNight && (weather === 'sun' || weather === 'partly' || weather === 'cloud' || weather === 'snow');
     root.classList.toggle('ink', ink); shade.classList.toggle('off', ink);
     const s = sky(d.code, isNight), t = d.days[0] || {hi: d.temp, lo: d.temp};
+    SNOW_CM = d.depth || 0; SNOW_RATE = s.rate || 0.75; syncSlider();   // the snow on the ground is the chosen place's, whatever the sky
     root.querySelector('.wx-city span').textContent = p.name;
     const tmp = root.querySelector('.wx-temp'); tmp.textContent = deg1(d.temp); tmp.style.fontSize = '';
     root.querySelector('.wx-cond').innerHTML = icon(s.ic, 28) + `<b>${s.say}</b><span>${deg(t.hi)} / ${deg(t.lo)}</span>`;
@@ -3767,7 +3907,16 @@ body.wx-sheeton .wx-mini{opacity:1} body.wx-sheeton .wx-dim{opacity:1; pointer-e
   // the test buttons: a picked sky or hour stays; "Live" goes back to the real weather
   for (const b of document.querySelectorAll('[data-w], [data-t]')) b.addEventListener('click', () => { manual = true; });
   { const grp = document.querySelector('.modes.stack'); if (grp){ const live = el('button', '', 'Live'); live.addEventListener('click', () => {
-      manual = false; history.replaceState(null, '', location.pathname + location.search); refresh(false); }); grp.prepend(live); } }
+      manual = false; SNOW_TEST = null; syncSlider(); history.replaceState(null, '', location.pathname + location.search); refresh(false); }); grp.prepend(live); } }
+  // test: how much snow lies on the ground (0 to 30 cm); "Live" goes back to the real depth
+  const snowBox = el('div', 'modes stack wx-snowtest', `<label>Snow on ground <b>live</b></label><input type="range" min="0" max="30" step="0.5" value="0" aria-label="Snow on the ground, in cm">`);
+  { const st = document.createElement('style'); st.textContent = `.wx-snowtest{padding:8px 12px !important; gap:4px; color:#fff; font-size:12px; font-weight:700; width:150px}
+.wx-snowtest b{font-weight:700; opacity:.8} .wx-snowtest input{width:100%; accent-color:#fff}`; document.head.append(st); }
+  const ctl = document.querySelector('.controls'); if (ctl) ctl.append(snowBox);
+  const sIn = snowBox.querySelector('input'), sLab = snowBox.querySelector('b');
+  function syncSlider(){ if (SNOW_TEST === null){ sIn.value = String(Math.min(30, SNOW_CM)); sLab.textContent = 'live · ' + (Math.round(SNOW_CM * 10) / 10) + ' cm'; } }
+  sIn.addEventListener('input', () => { SNOW_TEST = +sIn.value; sLab.textContent = SNOW_TEST + ' cm'; });
+  for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove']) snowBox.addEventListener(ev, e => e.stopPropagation(), {passive: true});
   // the test buttons now open from the menu (the arrow tab top left made room for the city)
   { const mm = document.querySelector('.mm');
     if (mm){ const b = el('button', 'it wxt', icon('partly', 30)); b.setAttribute('aria-label', 'Try other skies (test)');
