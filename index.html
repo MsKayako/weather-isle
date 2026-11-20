@@ -78,6 +78,7 @@ canvas#fx{position:absolute; inset:0; width:100%; height:100%; pointer-events:no
 .card .buy{font:inherit; font-size:11.5px; font-weight:700; color:#fff; background:#e9735f; border:0; border-radius:99px; padding:5px 10px; margin-top:2px; cursor:pointer}
 .card .buy[aria-disabled="true"]{background:#d6cbbb}
 .drawer[hidden],.toast[hidden],.buildtab[hidden],.buildbar[hidden],.pawcount[hidden]{display:none}
+.pawcount{display:none !important}
 .controls{position:absolute; z-index:2; top:calc(14px + env(safe-area-inset-top,0px)); left:max(14px,env(safe-area-inset-left,0px));
   display:flex; flex-direction:column; gap:8px; align-items:flex-start}
 .modes.stack{flex-direction:column; align-items:stretch; border-radius:18px}
@@ -2897,7 +2898,7 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
     $id('shelf').innerHTML = SHOP.items.filter(it => !it.fixed && tabOf(it) === tab && (!CAV || frontOK(it))).map(it => {
       const own = S.inv[it.id] || 0, on = sel === it.id;
       return `<div class="card" data-item="${it.id}" role="button" tabindex="0" aria-pressed="${on}"><img src="${(CAV && it.card) || it.img}" alt=""><span class="nm">${it.name}</span>` +
-        (it.water ? `<span class="price">Gratuit</span>` : FREE ? `<span class="price">${PAW}${it.price}</span>` : own ? `<span class="own">${own} à placer</span>` : `<span class="price">${PAW}${it.price}</span>`) +
+        (it.water || FREE ? '' : own ? `<span class="own">${own} à placer</span>` : `<span class="price">${PAW}${it.price}</span>`) +
         (on && !FREE && !it.water ? `<button class="buy" data-buy="${it.id}" ${S.paws < it.price ? 'aria-disabled="true"' : ''}>Acheter · ${it.price}</button>` : '') + `</div>`;
     }).join('');
     $id('pickInfo').textContent = removing ? (aim && aim.armed ? 'Touche-le encore pour le retirer' : 'Touche un objet ou une case pour le retirer')
