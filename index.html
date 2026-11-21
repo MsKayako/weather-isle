@@ -1247,8 +1247,8 @@ const CAT = (() => {
     Object.assign(NODES, nodes); Object.assign(LINKS, links); Object.assign(ACTS, acts); for (const j of jumps) JUMPS.add(j);
     const tilesN = Object.keys(nodes).filter(n => n[0] === 't'), by = a => Object.keys(acts).filter(n => a.includes(acts[n]));
     const shelter = by(['hide', 'sleep', 'box']);
-    SPOTS.sun = [...tilesN, ...by(['play', 'perch', 'loaf', 'look', 'scratch', 'sleep', 'hide', 'box', 'box']), ...by(['eat'])];
-    SPOTS.cloud = [...tilesN, ...by(['loaf', 'sleep', 'look', 'hide', 'perch', 'box']), ...by(['eat'])];
+    SPOTS.sun = [...tilesN, ...by(['play', 'perch', 'loaf', 'look', 'scratch', 'sleep', 'hide', 'box', 'box'])];
+    SPOTS.cloud = [...tilesN, ...by(['loaf', 'sleep', 'look', 'hide', 'perch', 'box'])];
     SPOTS.rain = shelter.length ? shelter : tilesN; SPOTS.storm = SPOTS.rain; SPOTS.night = by(['sleep']).length ? by(['sleep']) : SPOTS.rain;
     if (!(s.at in NODES) || s.path.some(n => !(n in NODES))){        // the map changed under it: start again from the nearest tile
       let best = tilesN[0], bd = 1e9; for (const n of tilesN){ const p = NODES[n], d = Math.hypot(p[0] - s.pos.x, p[2] - s.pos.z); if (d < bd){ bd = d; best = n; } }
@@ -1289,6 +1289,14 @@ const CAT = (() => {
   const JUMPS = new Set(['bridge|rroofW', 'rroofW|bridge', 'hopL|roof', 'roof|hopL', 'hopR|rroof', 'rroof|hopR']);   // gaps and hops it jumps
 
   function plan(){
+    if (s.chase) return;                                            /* following a dangling toy: chaseStep leads */
+    if (s.want){                                                     /* fed, or shown a toy: walking there, then eating or playing */
+      if (s.at === s.want && !s.path.length){ const w = s.want; s.want = null; s.keep = false;
+        if (ACTS[w] === 'eat'){ s.flip = w.endsWith('_L') ? 1 : -1; s.pose = 'eat'; s.timer = 6 + Math.random() * 3; s.ate = true; return; }
+        if (ACTS[w] === 'play'){ s.pose = 'play'; s.timer = 7 + Math.random() * 4; return; } }
+      else if (s.path.length) return;
+      else s.want = null;
+    }
     const from0 = s.path.length ? s.path[0] : s.at, can = reach(from0), spots = SPOTS[s.mood].filter(n => can.has(n)), sheltered = s.mood === 'rain' || s.mood === 'storm' || s.mood === 'night';
     const from = s.path.length ? s.path[0] : s.at;
     if (sheltered && spots.length && !spots.includes(from)){ s.path = route(from, pick(spots)); return; }
@@ -1381,7 +1389,8 @@ const CAT = (() => {
     if (mood !== s.mood){ s.mood = mood; plan(); }
     let pose = s.pose, speed = 0;
     s.climb = 0;
-    if (s.scare > 0){ s.scare -= dt; pose = 'scared'; }
+    if (s.chase && chaseStep(dt)) pose = s.cpose;
+    else if (s.scare > 0){ s.scare -= dt; pose = 'scared'; }
     else if (s.land > 0 && !s.jump){ s.land -= dt; pose = 'stand'; }   /* just landed: standing a moment, at least a second */        // thunder: fur up, frozen for a moment
     else if (s.path.length && !s.jump && JUMPS.has(s.at + '|' + s.path[0]) && NODES[s.path[0]][1] > s.pos.y + 1 && !(s.prep && s.prep.done)){
       // before hopping up: looks up, takes a little step, looks up again
@@ -1404,7 +1413,7 @@ const CAT = (() => {
       const N = NODES[s.path[0]];
       V.set(N[0] - s.pos.x, N[1] - s.pos.y, N[2] - s.pos.z);
       const climbing = Math.abs(V.y) > 0.4;                             // on the ladder
-      let gait; [gait, speed] = GAIT[s.mood];
+      let gait; [gait, speed] = s.chase ? ['trot', 1.9] : GAIT[s.mood];   /* after a toy: at a trot */
       if (climbing){ gait = 'walk'; speed = 0.6; }                       // up and down the stairs at a walk
       const dist = V.length(), step = speed * dt;
       const sdx = scrX(V), sdy = scrY(V);
@@ -1527,7 +1536,51 @@ const CAT = (() => {
     s.at = n; s.path = []; s.jump = null; s.prep = null; s.hideT = 0;
     s.away = {mode: 'in', t: 0, from: to.clone().addScaledVector(R_, -9).add(new THREE.Vector3(0, 4, 0)), to};
   }
-  return {update, tap, hits, setGraph, leave, back, scare(){ if (!s.held && !s.fall) s.scare = 1.4; }, setMode(m){ mode = m; }, getMode: () => mode, attach(a){ alt = a; }, pos: () => s.pos,
+  const CV = new THREE.Vector3();
+  function chaseStep(dt){                                            /* a toy dangling on its thread: walk under it, play, pounce now and then */
+    const c = s.chase;
+    if (s.pounce){ const P = s.pounce; P.t = Math.min(1, P.t + dt / P.dur);
+      s.pos.lerpVectors(P.a, P.b, P.t); s.pos.y += 4 * P.h * P.t * (1 - P.t); s.cpose = 'leap';
+      if (P.t >= 1){ s.pos.copy(P.b); s.pounce = null; c.cool = 0.8 + Math.random() * 1.4; } return true; }
+    let best = null, bd = 1e9;
+    for (const n in NODES){ if (n[0] !== 't') continue; const N = NODES[n], d = (N[0] - c.x) ** 2 + (N[2] - c.z) ** 2; if (d < bd){ bd = d; best = n; } }
+    if (!best) return false;
+    if (s.jump) return false;
+    if (s.at !== best && !s.path.length){ const p = route(s.at, best, false); if (p.length){ s.path = p; return false; } }
+    if (s.path.length){ if (s.path[s.path.length - 1] !== best){ const p = route(s.path[0], best, false); s.path = [s.path[0], ...p]; } return false; }
+    const N = NODES[best], gx = clamp(c.x, N[0] - 0.85, N[0] + 0.85), gz = clamp(c.z, N[2] - 0.85, N[2] + 0.85);
+    CV.set(gx - s.pos.x, 0, gz - s.pos.z); const d = CV.length(), sdx = scrX(CV.set(c.x - s.pos.x, 0, c.z - s.pos.z));
+    if (Math.abs(sdx) > 0.05) s.flip = sdx > 0 ? -1 : 1;
+    if (d > 0.7){ const step = Math.min(d - 0.6, 1.8 * dt); CV.set(gx - s.pos.x, 0, gz - s.pos.z).normalize(); s.pos.addScaledVector(CV, step); s.pos.y = N[1];
+      s.cpose = 'trot'; const L = DATA.trot && DATA.trot.gait; if (L) s.ph = (s.ph + dt * 1.8 * L.stance / (L.stride * SC)) % 1; c.cool = Math.max(c.cool, 0.4); return true; }
+    s.cpose = 'play'; c.playing = true; c.cool -= dt;
+    if (c.cool <= 0){ const b = new THREE.Vector3(gx, N[1], gz).lerp(s.pos, 0.25); s.pounce = {a: s.pos.clone(), b, t: 0, dur: 0.55, h: 0.35 + Math.max(0, c.y - 0.6) * 0.9}; }
+    return true;
+  }
+  function chase(p){                                                 /* p: where the toy is; null: let go */
+    if (!p){ if (s.chase){ if (s.pounce){ s.pos.copy(s.pounce.b); s.pounce = null; } s.chase = null; s.timer = 0; } return false; }
+    if (s.held || s.fall || s.away) return false;
+    if (!s.chase){ s.chase = {x: p.x, y: p.y, z: p.z, cool: 1, playing: false}; s.want = null; s.scare = 0; s.tap = 0; if (s.hideT > 0) s.hideT = 0.01; }
+    else { s.chase.x = p.x; s.chase.y = p.y; s.chase.z = p.z; }
+    return s.chase.playing;
+  }
+  function goTo(n, kind){                                          /* off it goes, whatever it was doing */
+    if (s.held || s.fall || s.away || !NODES[n]) return false;
+    const from = s.path.length ? s.path[0] : s.at;
+    if (from !== n){ const p = route(from, n, false); if (!p.length) return false; s.path = s.path.length ? [s.path[0], ...p] : p; }
+    s.want = n; s.scare = 0; s.tap = 0; if (s.hideT > 0) s.hideT = 0.01; if (kind === 'eat') s.ate = false;
+    if (!s.path.length && s.at === n){ s.timer = 0; plan(); }
+    return true;
+  }
+  function goEat(){
+    const from = s.path.length ? s.path[0] : s.at; let best = null, bl = 1e9;
+    for (const n of Object.keys(NODES)){ if (ACTS[n] !== 'eat') continue; const p = n === from ? [] : route(from, n, false); if (n !== from && !p.length) continue; if (p.length < bl){ bl = p.length; best = n; } }
+    return best ? goTo(best, 'eat') : false;
+  }
+  return {chase, goEat, goPlay: n => ACTS[n] === 'play' && goTo(n, 'play'), eating: () => s.pose === 'eat' && !s.path.length || ACTS[s.want] === 'eat',
+          pet(){ if (s.held || s.fall || s.away || s.hideT > 0) return false; s.tapPose = 'happy'; s.tap = 2.6; return true; },
+          snub(){ if (!s.held && !s.away && !s.path.length) s.flip *= -1; },
+          update, tap, hits, setGraph, leave, back, scare(){ if (!s.held && !s.fall) s.scare = 1.4; }, setMode(m){ mode = m; }, getMode: () => mode, attach(a){ alt = a; }, pos: () => s.pos,
           grab(x, y){ s.held = {x, y}; s.fall = null; }, heldNode: () => s.heldNode, at: () => s.at, nodes: () => NODES, links: () => LINKS, route: (a, b) => route(a, b, false), debugAt(n){ s.at = n; s.pos.set(...NODES[n]); s.path = []; s.jump = null; s.hideT = 0; s.keep = true; s.timer = 0; plan(); s.timer = 99; }, holding: () => !!s.held, goTo(n){ s.path = route(s.at, n, false); s.keep = true; s.timer = 0; s.hideT = 0; }, timer0(){ s.timer = 0; }, drop};
 })();
 {
@@ -1536,22 +1589,31 @@ const CAT = (() => {
   canvas.addEventListener('pointerdown', e => {
     if (window.__editing){ down = null; return; }
     if (e.pointerType !== 'mouse') touches++;
-    down = {x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId, onCat: CAT.hits(e.clientX, e.clientY)};
-    if (down.onCat) holdT = setTimeout(() => { if (down) CAT.grab(down.x, down.y); }, 220);
+    down = {x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId, onCat: CAT.hits(e.clientX, e.clientY)}; if (!down.onCat) down.toy = WORLD.care.toyAt(e.clientX, e.clientY);
+    if (down.onCat){ down.len = 0; down.lx = e.clientX; down.ly = e.clientY; holdT = setTimeout(() => { if (down && !down.stroke) CAT.grab(down.x, down.y); }, 380); }   /* hold still: picked up */
   });
   canvas.addEventListener('pointermove', e => {
     if (!down || e.pointerId !== down.id) return;
     if (CAT.holding()) CAT.grab(e.clientX, e.clientY);
+    else if (down.toy){                                             /* a toy picked up by its thread */
+      if (!down.dragging && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8){ down.dragging = true; WORLD.care.dragStart(down.toy, e.clientX, e.clientY); }
+      if (down.dragging) WORLD.care.dragMove(e.clientX, e.clientY);
+    }
     else if (!down.onCat && e.pointerType !== 'mouse' && touches === 1 && zoom < 1.01 && !gyro){   // one finger on the scene: tilt it
       tiltX = clamp((e.clientX - down.x) / 140, -1, 1); tiltY = clamp((e.clientY - down.y) / 180, -1, 1);
     }
-    else if (down.onCat && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6){ clearTimeout(holdT); CAT.grab(e.clientX, e.clientY); }
+    else if (down.onCat){                                            /* a stroke along the cat: petting, once per stroke */
+      down.len += Math.hypot(e.clientX - down.lx, e.clientY - down.ly); down.lx = e.clientX; down.ly = e.clientY;
+      if (!down.stroke && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10){ down.stroke = true; clearTimeout(holdT); }
+      if (down.stroke && down.len > 35 && CAT.hits(e.clientX, e.clientY)){ down.len = -1e9; WORLD.care.pet(); }
+    }
   });
   const up = e => {
     clearTimeout(holdT);
     if (e.pointerType !== 'mouse'){ touches = Math.max(0, touches - 1); if (!gyro){ tiltX = 0; tiltY = 0; } }   // eases back when you let go
     if (CAT.holding()) CAT.drop();
-    else if (down && e.type === 'pointerup' && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8 && performance.now() - down.t < 400) CAT.tap(e.clientX, e.clientY);
+    else if (down && down.dragging) WORLD.care.dragEnd();
+    else if (down && e.type === 'pointerup' && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8 && performance.now() - down.t < 400){ if (!WORLD.care.tap(e.clientX, e.clientY, true) && !CAT.tap(e.clientX, e.clientY)) WORLD.care.tap(e.clientX, e.clientY); }
     down = null;
   };
   canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
@@ -2401,7 +2463,8 @@ const WORLD = (() => {
 .mm button:active{transform:scale(.93)} .mm button:focus-visible{outline:2px solid #2c6a7c; outline-offset:2px}
 .mm .it{width:52px; height:52px; opacity:0; transform:translateY(-14px) scale(.6); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.3,1.4,.6,1)}
 .mm.open .it{opacity:1; transform:none; pointer-events:auto} .mm.open .it:nth-child(3){transition-delay:.05s}
-.mm .it.soon{color:#9aa9ad}
+.mm .bb{width:52px; height:52px} .mm .wxt{width:40px; height:40px}
+.mm{flex-direction:row-reverse}
 .mm .bars span{display:block; width:18px; height:2.6px; border-radius:2px; background:currentColor; transition:transform .2s, opacity .2s}
 .mm .bars{display:grid; gap:4px; place-content:center}
 .mm.open .bars span:nth-child(1){transform:translateY(6.6px) rotate(45deg)} .mm.open .bars span:nth-child(2){opacity:0} .mm.open .bars span:nth-child(3){transform:translateY(-6.6px) rotate(-45deg)}`;
@@ -2409,17 +2472,11 @@ const WORLD = (() => {
     const ico = d => `<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
     const fico = d => `<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="currentColor">${d}</svg>`;   // icons: Font Awesome Free 'screwdriver-wrench' (CC BY 4.0, fontawesome.com/license/free), Google Material Icons 'favorite' (Apache 2.0)
     const mm = document.createElement('div'); mm.className = 'mm';
-    mm.innerHTML = `<button class="bars" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>` +
-      `<button class="it" data-a="build" aria-label="Construire"><svg viewBox="0 0 512 512" width="25" height="25" aria-hidden="true" fill="currentColor"><path d="M78.6 5C69.1-2.4 55.6-1.5 47 7L7 47c-8.5 8.5-9.4 22-2.1 31.6l80 104c4.5 5.9 11.6 9.4 19 9.4l54.1 0 109 109c-14.7 29-10 65.4 14.3 89.6l112 112c12.5 12.5 32.8 12.5 45.3 0l64-64c12.5-12.5 12.5-32.8 0-45.3l-112-112c-24.2-24.2-60.6-29-89.6-14.3l-109-109 0-54.1c0-7.5-3.5-14.5-9.4-19L78.6 5zM19.9 396.1C7.2 408.8 0 426.1 0 444.1C0 481.6 30.4 512 67.9 512c18 0 35.3-7.2 48-19.9L233.7 374.3c-7.8-20.9-9-43.6-3.6-65.1l-61.7-61.7L19.9 396.1zM512 144c0-10.5-1.1-20.7-3.2-30.5c-2.4-11.2-16.1-14.1-24.2-6l-63.9 63.9c-3 3-7.1 4.7-11.3 4.7L352 176c-8.8 0-16-7.2-16-16l0-57.4c0-4.2 1.7-8.3 4.7-11.3l63.9-63.9c8.1-8.1 5.2-21.8-6-24.2C388.7 1.1 378.5 0 368 0C288.5 0 224 64.5 224 144l0 .8 85.3 85.3c36-9.1 75.8 .5 104 28.7L429 274.5c49-23 83-72.8 83-130.5zM56 432a24 24 0 1 1 48 0 24 24 0 1 1 -48 0z"/></svg></button>` +
-      `<button class="it soon" data-a="care" aria-label="S’occuper du chat (bientôt)">${fico('<path d="M13.35 20.13c-.76.69-1.93.69-2.69-.01l-.11-.1C5.3 15.27 1.87 12.16 2 8.28c.06-1.7.93-3.33 2.34-4.29 2.64-1.8 5.9-.96 7.66 1.1 1.76-2.06 5.02-2.91 7.66-1.1 1.41.96 2.28 2.59 2.34 4.29.14 3.88-3.3 6.99-8.55 11.76l-.1.09z"/>')}</button>`;
+    mm.innerHTML = `<button class="bb" data-a="build" aria-label="Construire"><svg viewBox="0 0 512 512" width="25" height="25" aria-hidden="true" fill="currentColor"><path d="M78.6 5C69.1-2.4 55.6-1.5 47 7L7 47c-8.5 8.5-9.4 22-2.1 31.6l80 104c4.5 5.9 11.6 9.4 19 9.4l54.1 0 109 109c-14.7 29-10 65.4 14.3 89.6l112 112c12.5 12.5 32.8 12.5 45.3 0l64-64c12.5-12.5 12.5-32.8 0-45.3l-112-112c-24.2-24.2-60.6-29-89.6-14.3l-109-109 0-54.1c0-7.5-3.5-14.5-9.4-19L78.6 5zM19.9 396.1C7.2 408.8 0 426.1 0 444.1C0 481.6 30.4 512 67.9 512c18 0 35.3-7.2 48-19.9L233.7 374.3c-7.8-20.9-9-43.6-3.6-65.1l-61.7-61.7L19.9 396.1zM512 144c0-10.5-1.1-20.7-3.2-30.5c-2.4-11.2-16.1-14.1-24.2-6l-63.9 63.9c-3 3-7.1 4.7-11.3 4.7L352 176c-8.8 0-16-7.2-16-16l0-57.4c0-4.2 1.7-8.3 4.7-11.3l63.9-63.9c8.1-8.1 5.2-21.8-6-24.2C388.7 1.1 378.5 0 368 0C288.5 0 224 64.5 224 144l0 .8 85.3 85.3c36-9.1 75.8 .5 104 28.7L429 274.5c49-23 83-72.8 83-130.5zM56 432a24 24 0 1 1 48 0 24 24 0 1 1 -48 0z"/></svg></button>`;   // the build button, straight away (caring for the cat happens on the island itself)
     host.append(mm);
-    const bars = mm.querySelector('.bars'), set = on => { mm.classList.toggle('open', on); bars.setAttribute('aria-expanded', on); };
-    bars.addEventListener('click', () => set(!mm.classList.contains('open')));
-    mm.addEventListener('click', e => { const b = e.target.closest('[data-a]'); if (!b) return;
-      if (b.dataset.a === 'build'){ set(false); document.getElementById('buildTab').click(); }
-      else { toast('S’occuper du chat : bientôt'); set(false); } });
+    mm.addEventListener('click', e => { const b = e.target.closest('[data-a]'); if (b && b.dataset.a === 'build') document.getElementById('buildTab').click(); });
     for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove', 'wheel']) mm.addEventListener(ev, e => e.stopPropagation());
-    window.__menuSync = () => { const hide = editing; if (mm.hidden !== hide){ mm.hidden = hide; if (hide) set(false); } };
+    window.__menuSync = () => { const hide = editing; if (mm.hidden !== hide) mm.hidden = hide; };
   })();
   // No currency for now (the paw counters are hidden), and the weather / day-night buttons fold away behind a small arrow tab at the top
   (() => {
@@ -2821,7 +2878,7 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
   /* ---- saving: in your account when the page can, otherwise in this browser ---- */
   const LS = 'weather-isle-save-v1';
   let store = null, saveT = 0;
-  const snapshot = () => ({fl: S.fl, sym: S.sym, paws: S.paws, day: S.day, inv: S.inv, uid: S.uid, items: S.items, tiles: [...tiles].map(([k, t]) => [...k.split(',').map(Number), t])});
+  const snapshot = () => ({fl: S.fl, sym: S.sym, paws: S.paws, day: S.day, inv: S.inv, uid: S.uid, items: S.items, care: S.care, tiles: [...tiles].map(([k, t]) => [...k.split(',').map(Number), t])});
   function save(){
     if (SHOWCASE) return;
     clearTimeout(saveT);
@@ -2834,7 +2891,7 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
   function apply(d){
     tiles.clear();
     if (d && Array.isArray(d.tiles) && d.tiles.length){ for (const [i, j, t] of d.tiles) if (t !== 'pond') tiles.set(key(i, j), BY[t] ? t : 'grass'); } else fromMask();
-    if (d){ S.fl = d.fl || 0; S.sym = d.sym || 0; S.paws = d.paws ?? S.paws; S.day = d.day || ''; S.inv = d.inv || S.inv; S.uid = d.uid || 1;
+    if (d){ S.fl = d.fl || 0; S.sym = d.sym || 0; S.paws = d.paws ?? S.paws; S.day = d.day || ''; S.inv = d.inv || S.inv; S.uid = d.uid || 1; S.care = d.care || null;
             S.items = (d.items || []).filter(r => BY[r.id]).map(r => ({...r, r: r.r ?? (r.f ? 1 : 0), s: !r.s ? 1 : r.s < 0.8 ? 0.5 : r.s < 1.6 ? 1 : 2})); }
     if (!S.fl){                                                     // the wildflowers that grew on the grass become pieces of their own
       S.fl = 1;
@@ -3312,7 +3369,135 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
     if (hlMesh){ const k = 0.3 + 0.15 * Math.sin(t * 5); HL.opacity = k; }
   }
   window.__isleTest = {heightFor, items: () => S.items, area: () => [...AREA], tiles: () => [...tiles.keys()]};          // for checks from the console
-  return {update, rebuildGraph, frontScale, frontMask, editing: () => editing, dragging: () => !!(drag && (drag.kind === 'move' || BY[sel])) || !!(shelfDrag && shelfDrag.on), depthOf, view, clampEdit, stepView, stopFit, home, inside, nodeAt};
+  /* ---------- looking after the cat ----------
+     Tap the bowl, then "Nourrir": the cat walks over and eats (2 meals a day; after that it turns away, "Repu !").
+     Stroke the cat to pet it (hearts; 5 pets a day count). Tap a toy: the cat goes and plays with it (2 plays a day count).
+     The counts are kept in the save (S.care) for the unlocks to come. */
+  const care = (() => {
+    const CAPS = {meals: 2, pets: 5, plays: 2}, CAT_TOP = 1.8;
+    const today = () => { const t = new Date(); return t.getFullYear() + '-' + (t.getMonth() + 1) + '-' + t.getDate(); };
+    function C(){
+      const c = S.care || (S.care = {day: '', meals: 0, pets: 0, plays: 0, total: {meals: 0, pets: 0, plays: 0}});
+      if (c.day !== today()){ c.day = today(); c.meals = c.pets = c.plays = 0; }
+      return c;
+    }
+    function count(k){ const c = C(); if (c[k] >= CAPS[k]) return false; c[k]++; c.total[k] = (c.total[k] || 0) + 1; save(); return true; }
+
+    const st = document.createElement('style');
+    st.textContent = `.care-feed{position:fixed; z-index:4; transform:translate(-50%, -100%); display:flex; align-items:center; gap:7px; padding:0 16px 0 12px; height:42px; border:0; border-radius:99px;
+  background:#fff; color:#2c6a7c; font:inherit; font-size:15px; font-weight:700; box-shadow:0 8px 20px -8px rgba(20,60,75,.6); cursor:pointer; -webkit-tap-highlight-color:transparent; animation:care-pop .22s cubic-bezier(.3,1.5,.6,1)}
+.care-feed:active{transform:translate(-50%, -100%) scale(.94)} .care-feed:focus-visible{outline:2px solid #2c6a7c; outline-offset:2px}
+.care-feed[hidden], .care-say[hidden]{display:none}
+.care-say{position:fixed; z-index:4; transform:translate(-50%, -100%); padding:7px 13px; border-radius:16px; background:#fff; color:#2c6a7c; font-size:15px; font-weight:700; pointer-events:none;
+  box-shadow:0 8px 20px -10px rgba(20,60,75,.6); white-space:nowrap}
+.care-say::after{content:''; position:absolute; left:50%; bottom:-7px; margin-left:-7px; border:7px solid transparent; border-bottom:0; border-top-color:#fff}
+.care-say.on{animation:care-say 2.2s ease forwards}
+.care-heart{position:fixed; z-index:4; width:22px; height:22px; margin:-11px 0 0 -11px; color:#e8697a; pointer-events:none; animation:care-heart 1.3s ease-out forwards}
+@keyframes care-pop{from{opacity:0; transform:translate(-50%, -80%) scale(.6)}}
+@keyframes care-say{0%{opacity:0; margin-top:8px} 10%{opacity:1; margin-top:0} 80%{opacity:1} 100%{opacity:0}}
+@keyframes care-heart{0%{opacity:0; transform:translateY(0) scale(.5)} 15%{opacity:1; transform:translateY(-8px) scale(1)} 100%{opacity:0; transform:translateY(-60px) scale(.8)}}`;
+    document.head.append(st);
+    const BOWL = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="currentColor"><path d="M2.5 11.5h19a1 1 0 0 1 1 1.1C21.8 17 17.4 20 12 20S2.2 17 1.5 12.6a1 1 0 0 1 1-1.1z"/><circle cx="8" cy="9" r="1.9"/><circle cx="12.3" cy="7.6" r="1.9"/><circle cx="16.4" cy="9.2" r="1.9"/></svg>';
+    const HEART = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="currentColor"><path d="M12 21s-7.4-4.5-9.5-9C1 8.6 3.2 5 6.6 5c2 0 3.5 1.1 4.4 2.5C11.9 6.1 13.4 5 15.4 5c3.4 0 5.6 3.6 4.1 7-2.1 4.5-7.5 9-7.5 9z"/></svg>';
+    const feed = document.createElement('button'); feed.className = 'care-feed'; feed.hidden = true; feed.innerHTML = BOWL + 'Nourrir';
+    const say = document.createElement('div'); say.className = 'care-say'; say.hidden = true; say.setAttribute('role', 'status');
+    document.body.append(feed, say);
+
+    const V = new THREE.Vector3(), RC2 = new THREE.Raycaster();
+    function scr(x, y, z){ V.set(x, y, z).project(cam); const r = canvas.getBoundingClientRect(); return [r.left + (V.x + 1) / 2 * r.width, r.top + (1 - V.y) / 2 * r.height]; }
+    let bowl = null, sayT = 0, raf = 0;
+    function hideFeed(){ feed.hidden = true; bowl = null; }
+    function place(){                                                 // the button over the bowl, the bubble over the cat, following the view
+      let more = false;
+      if (window.__editing){ hideFeed(); say.hidden = true; }
+      if (bowl && !feed.hidden){
+        if (!S.items.includes(bowl)) hideFeed();
+        else { const [x, z] = center(bowl.i, bowl.j), [sx, sy] = scr(x, (bowl.y || 0) + 0.7, z); feed.style.left = sx + 'px'; feed.style.top = sy + 'px'; more = true; }
+      }
+      if (!say.hidden){
+        if (performance.now() > sayT) say.hidden = true;
+        else { const p = CAT.pos(), [sx, sy] = scr(p.x, p.y + CAT_TOP, p.z); say.style.left = sx + 'px'; say.style.top = sy + 'px'; more = true; }
+      }
+      return more;
+    }
+    function loop(){ if (raf) return; const f = () => { raf = 0; if (place()) raf = requestAnimationFrame(f); }; raf = requestAnimationFrame(f); }
+    function speak(t){ say.textContent = t; say.hidden = false; say.classList.remove('on'); void say.offsetWidth; say.classList.add('on'); sayT = performance.now() + 2200; place(); loop(); }
+    function full(){ CAT.snub(); speak('Repu !'); }
+    function hearts(){
+      const p = CAT.pos(), [x, y] = scr(p.x, p.y + CAT_TOP * 0.8, p.z);
+      for (let i = 0; i < 3; i++){
+        const h = document.createElement('span'); h.className = 'care-heart'; h.innerHTML = HEART;
+        h.style.left = (x + (i - 1) * 20 + Math.random() * 8 - 4) + 'px'; h.style.top = (y - Math.random() * 10) + 'px'; h.style.animationDelay = (i * 0.12) + 's';
+        document.body.append(h); setTimeout(() => h.remove(), 1700);
+      }
+    }
+    const usable = o => o && BY[o.id] && (o.id === 'bowl' || BY[o.id].act === 'play');
+    function pickAt(x, y, exact){                                     // the bowl or a toy under the finger (exact: right on it, before the cat gets the tap)
+      const r = canvas.getBoundingClientRect(); RC2.setFromCamera({x: (x - r.left) / r.width * 2 - 1, y: 1 - (y - r.top) / r.height * 2}, cam);
+      let o = null; try { o = frontHit(RC2); } catch (e){}
+      if (usable(o)) return o;
+      if (exact) return null;
+      let best = null, bd = 48;
+      for (const it of S.items){ if (!usable(it)) continue; const [cx, cz] = center(it.i, it.j), [sx, sy] = scr(cx, (it.y || 0) + 0.25, cz), d = Math.hypot(sx - x, sy - y); if (d < bd){ bd = d; best = it; } }
+      return best;
+    }
+    feed.addEventListener('click', () => {
+      const b = bowl; hideFeed(); if (!b) return;
+      if (C().meals >= CAPS.meals){ full(); return; }
+      if (CAT.goEat()) count('meals'); else toast('Le chat ne peut pas aller jusqu’à sa gamelle');
+    });
+    function tap(x, y, exact){
+      if (window.__editing) return false;
+      const o = pickAt(x, y, exact);
+      if (!o){ if (!exact) hideFeed(); return false; }
+      if (o.id === 'bowl'){
+        if (CAT.eating()) return true;
+        if (C().meals >= CAPS.meals){ hideFeed(); full(); return true; }
+        bowl = o; feed.hidden = false; place(); loop(); return true;
+      }
+      hideFeed();
+      if (CAT.goPlay('i' + o.u)) count('plays'); else toast('Le chat ne peut pas aller jusqu’à ce jouet');
+      return true;
+    }
+    function pet(){ if (!CAT.pet()) return; hearts(); count('pets'); }
+
+    /* ---- dangling a toy by its thread: the cat follows it, plays and pounces; let go and it lands on the square below ---- */
+    const HANG = 2.4, LOW = 0.75;                                     // the finger holds the thread this high; the toy swings this high off the ground
+    const threadMat = new THREE.LineBasicMaterial({color: 0xc95a4a}), PL = new THREE.Plane(new THREE.Vector3(0, 1, 0), -HANG), HIT = new THREE.Vector3();
+    let drag = null;
+    const toyAt = (x, y) => { if (window.__editing) return null; const o = pickAt(x, y, false); return o && o.id !== 'bowl' && FRONT.has(o.u) ? o : null; };
+    function fingerAt(x, y){                                          // where the thread's end is, under the finger
+      const r = canvas.getBoundingClientRect(); RC2.setFromCamera({x: (x - r.left) / r.width * 2 - 1, y: 1 - (y - r.top) / r.height * 2}, cam);
+      return RC2.ray.intersectPlane(PL, HIT) ? HIT.clone() : null;
+    }
+    function dragStart(o, x, y){
+      const e = FRONT.get(o.u); if (!e || drag) return;
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), threadMat); line.frustumCulled = false; scene.add(line);
+      const p = e.g.position.clone();
+      drag = {o, e, line, home: p.clone(), sgHome: e.sg.position.clone(), pos: p.clone(), vel: new THREE.Vector3(), top: fingerAt(x, y) || p.clone().setY(HANG), raf: 0, counted: false};
+      hideFeed(); tick();
+    }
+    function dragMove(x, y){ if (!drag) return; const f = fingerAt(x, y); if (f) drag.top.copy(f); }
+    function tick(){                                                  // the toy swings after the finger like a pendulum
+      if (!drag) return;
+      const d = drag, want = V.set(d.top.x, LOW, d.top.z);
+      d.vel.addScaledVector(want.sub(d.pos), 0.09).multiplyScalar(0.84); d.pos.add(d.vel); d.pos.y = LOW + Math.min(0.5, d.vel.length() * 0.6);
+      d.e.g.position.copy(d.pos); d.e.sg.position.set(d.pos.x, d.home.y, d.pos.z);
+      const a = d.line.geometry.attributes.position; a.setXYZ(0, d.pos.x, d.pos.y + 0.32, d.pos.z); a.setXYZ(1, d.top.x, d.top.y, d.top.z); a.needsUpdate = true;
+      if (CAT.chase(d.pos) && !d.counted){ d.counted = true; count('plays'); }
+      d.raf = requestAnimationFrame(tick);
+    }
+    function dragEnd(){
+      if (!drag) return; const d = drag; drag = null; cancelAnimationFrame(d.raf); scene.remove(d.line); d.line.geometry.dispose();
+      const [i, j] = tileOf(d.pos.x, d.pos.z), free = tiles.has(key(i, j)) && !onTile(i, j, d.o).some(r => !isEdge(r));
+      CAT.chase(null);
+      if (free && (i !== d.o.i || j !== d.o.j)){ d.o.i = i; d.o.j = j; rebuildItems(); rebuildGraph(); save(); }   // it lands on the square below
+      else { d.e.g.position.copy(d.home); d.e.sg.position.copy(d.sgHome); }                                       // over the water or something else: back where it was
+      CAT.goPlay('i' + d.o.u);                                       // and the cat plays with it a little longer
+    }
+    return {tap, pet, state: C, toyAt, dragStart, dragMove, dragEnd};
+  })();
+  return {care, update, rebuildGraph, frontScale, frontMask, editing: () => editing, dragging: () => !!(drag && (drag.kind === 'move' || BY[sel])) || !!(shelfDrag && shelfDrag.on), depthOf, view, clampEdit, stepView, stopFit, home, inside, nodeAt};
 })();
 
 
@@ -4202,8 +4387,8 @@ body.wx-sheeton .wx-mini{opacity:1} body.wx-sheeton .wx-dim{opacity:1; pointer-e
     more.querySelector('[data-k="after"]').checked = false; for (const x of more.querySelectorAll('[aria-pressed]')) x.setAttribute('aria-pressed', 'false'); }
   // the test buttons now open from the menu (the arrow tab top left made room for the city)
   { const mm = document.querySelector('.mm');
-    if (mm){ const b = el('button', 'it wxt', icon('partly', 30)); b.setAttribute('aria-label', 'Essayer d’autres ciels (test)');
-      b.addEventListener('click', () => { document.body.classList.toggle('wx-open'); mm.querySelector('.bars').click(); }); mm.append(b); } }
+    if (mm){ const b = el('button', 'wxt', icon('partly', 24)); b.setAttribute('aria-label', 'Essayer d’autres ciels (test)');
+      b.addEventListener('click', () => { document.body.classList.toggle('wx-open'); }); mm.append(b); } }
   // hidden while building, like the old header
   { const hud = document.querySelector('.hud');
     if (hud) new MutationObserver(() => { const a = hud.classList.contains('away'); root.classList.toggle('away', a); shade.classList.toggle('away', a); if (a) closeSheet(); })
