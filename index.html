@@ -1156,6 +1156,17 @@ const CAT = (() => {
     tex.needsUpdate = true;
   }
 
+  const PURR = {until: 0};
+  function purr(d, t, flip){                                         /* purring: little r's float up from its head, like the z's of its sleep */
+    if (performance.now() > PURR.until) return;
+    for (let i = 0; i < 3; i++){
+      const p = ((t * 0.55) - i * 0.33 + 3) % 1.2; if (p > 1) continue;
+      c2.setTransform(flip * K, 0, 0, K, TEX / 2 - flip * K * d.cx, TEX - FOOT - K * d.foot);
+      c2.translate(d.w * 0.52 + p * 16, d.h * 0.3 - p * 70); c2.scale(flip * (0.8 + i * 0.15), 0.8 + i * 0.15);   /* never mirrored */
+      c2.globalAlpha = Math.sin(p * PI); c2.strokeStyle = INK; c2.lineWidth = 4.2; c2.lineCap = 'round'; c2.lineJoin = 'round';
+      c2.beginPath(); c2.moveTo(0, 0); c2.lineTo(0, -15); c2.moveTo(0, -8); c2.quadraticCurveTo(3, -16, 11, -14); c2.stroke(); c2.globalAlpha = 1;
+    }
+  }
   function draw(id, t, flip, ph = 0){
     const d = DATA[id], P = paths[id], mv = MOVES[id] || {};
     if (d.sprite) return sprite(d, id, flip, ph);
@@ -1197,6 +1208,7 @@ const CAT = (() => {
       c2.globalAlpha = 1;
       if (belly) c2.restore();
     }
+    if (id === 'happy') purr(d, t, flip);
     if (d.zz) for (let i = 0; i < d.zz; i++){        // z, z, Z: each appears in turn above its head, floats up and fades away
       const p = ((t * 0.45) - i * 0.3 + 3) % 1.2; if (p > 1) continue;
       base(); c2.translate(-100 + p * 6, 20 - p * 16); c2.globalAlpha = Math.sin(p * PI); c2.fillStyle = INK; c2.fill(P['z' + (i + 1)]); c2.globalAlpha = 1;
@@ -1292,7 +1304,7 @@ const CAT = (() => {
     if (s.chase) return;                                            /* following a dangling toy: chaseStep leads */
     if (s.want){                                                     /* fed, or shown a toy: walking there, then eating or playing */
       if (s.at === s.want && !s.path.length){ const w = s.want; s.want = null; s.keep = false;
-        if (ACTS[w] === 'eat'){ s.flip = w.endsWith('_L') ? 1 : -1; s.pose = 'eat'; s.timer = 6 + Math.random() * 3; s.ate = true; return; }
+        if (ACTS[w] === 'eat'){ s.flip = w.endsWith('_L') ? 1 : -1; s.pose = 'eat'; s.timer = 6 + Math.random() * 3; s.eatDur = s.timer; s.ate = true; return; }
         if (ACTS[w] === 'play'){ s.pose = 'play'; s.timer = 7 + Math.random() * 4; return; } }
       else if (s.path.length) return;
       else s.want = null;
@@ -1578,7 +1590,11 @@ const CAT = (() => {
     return best ? goTo(best, 'eat') : false;
   }
   return {chase, goEat, goPlay: n => ACTS[n] === 'play' && goTo(n, 'play'), eating: () => s.pose === 'eat' && !s.path.length || ACTS[s.want] === 'eat',
-          pet(){ if (s.held || s.fall || s.away || s.hideT > 0) return false; s.tapPose = 'happy'; s.tap = 2.6; return true; },
+          eatProgress: () => s.pose === 'eat' && !s.path.length && s.eatDur ? Math.min(1, Math.max(0, 1 - s.timer / s.eatDur)) : null,
+          pet(){ if (s.held || s.fall || s.away || s.hideT > 0) return false;      /* petted: it stops, sits looking happy and purrs */
+            PURR.until = performance.now() + 4500;
+            if ((s.pose === 'eat' && !s.path.length) || s.chase || s.jump) return true;   /* eating or playing: it purrs but carries on */
+            s.path = []; s.want = null; s.prep = null; s.tap = 0; s.pose = 'happy'; s.timer = 4.5; return true; },
           snub(){ if (!s.held && !s.away && !s.path.length) s.flip *= -1; },
           update, tap, hits, setGraph, leave, back, scare(){ if (!s.held && !s.fall) s.scare = 1.4; }, setMode(m){ mode = m; }, getMode: () => mode, attach(a){ alt = a; }, pos: () => s.pos,
           grab(x, y){ s.held = {x, y}; s.fall = null; }, heldNode: () => s.heldNode, at: () => s.at, nodes: () => NODES, links: () => LINKS, route: (a, b) => route(a, b, false), debugAt(n){ s.at = n; s.pos.set(...NODES[n]); s.path = []; s.jump = null; s.hideT = 0; s.keep = true; s.timer = 0; plan(); s.timer = 99; }, holding: () => !!s.held, goTo(n){ s.path = route(s.at, n, false); s.keep = true; s.timer = 0; s.hideT = 0; }, timer0(){ s.timer = 0; }, drop};
@@ -2933,8 +2949,20 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
         S.items.push(r);
       }
     }
+    if (d) careOnce();
     buildFloor(); rebuildItems(); rebuildGraph(); refreshUI();
     if (typeof frame !== 'undefined' && base) home();
+  }
+  function careOnce(){                                               /* once, after the save is loaded (test 2): today's care counts start again, and a yarn ball to play with */
+    const c = S.care || (S.care = {day: '', meals: 0, pets: 0, plays: 0, total: {meals: 0, pets: 0, plays: 0}});
+    if (c.v === 2) return; c.v = 2; c.meals = c.pets = c.plays = 0;
+    if (!S.items.some(r => r.id === 'yarn' || r.id === 'fish')){
+      const b = S.items.find(r => r.id === 'bowl'); let best = null, bd = 1e9;
+      for (const k of tiles.keys()){ const [i, j] = k.split(',').map(Number); if (onTile(i, j).some(r => !isEdge(r))) continue;
+        const dd = b ? Math.abs(Math.hypot(i - b.i, j - b.j) - 2.2) : 0; if (dd < bd){ bd = dd; best = [i, j]; } }
+      if (best) S.items.push({u: S.uid++, id: 'yarn', i: best[0], j: best[1], r: 0, s: 1, y: 0});
+    }
+    save();
   }
   function daily(){                                                 // the first visit each day brings paw points
     const t = new Date(), today = t.getFullYear() + '-' + (t.getMonth() + 1) + '-' + t.getDate();
@@ -3388,7 +3416,7 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
   background:#fff; color:#2c6a7c; font:inherit; font-size:15px; font-weight:700; box-shadow:0 8px 20px -8px rgba(20,60,75,.6); cursor:pointer; -webkit-tap-highlight-color:transparent; animation:care-pop .22s cubic-bezier(.3,1.5,.6,1)}
 .care-feed:active{transform:translate(-50%, -100%) scale(.94)} .care-feed:focus-visible{outline:2px solid #2c6a7c; outline-offset:2px}
 .care-feed[hidden], .care-say[hidden]{display:none}
-.care-say{position:fixed; z-index:4; transform:translate(-50%, -100%); padding:7px 13px; border-radius:16px; background:#fff; color:#2c6a7c; font-size:15px; font-weight:700; pointer-events:none;
+.care-say{position:fixed; z-index:4; transform:translate(-50%, -100%); display:grid; place-items:center; padding:6px 10px; border-radius:16px; background:#fff; color:#2c6a7c; font-size:15px; font-weight:700; pointer-events:none;
   box-shadow:0 8px 20px -10px rgba(20,60,75,.6); white-space:nowrap}
 .care-say::after{content:''; position:absolute; left:50%; bottom:-7px; margin-left:-7px; border:7px solid transparent; border-bottom:0; border-top-color:#fff}
 .care-say.on{animation:care-say 2.2s ease forwards}
@@ -3421,8 +3449,10 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
       return more;
     }
     function loop(){ if (raf) return; const f = () => { raf = 0; if (place()) raf = requestAnimationFrame(f); }; raf = requestAnimationFrame(f); }
-    function speak(t){ say.textContent = t; say.hidden = false; say.classList.remove('on'); void say.offsetWidth; say.classList.add('on'); sayT = performance.now() + 2200; place(); loop(); }
-    function full(){ CAT.snub(); speak('Repu !'); }
+    function speak(html, label){ say.innerHTML = html; say.setAttribute('aria-label', label); say.hidden = false; say.classList.remove('on'); void say.offsetWidth; say.classList.add('on'); sayT = performance.now() + 2200; place(); loop(); }
+    const SCRIBBLE = '<svg viewBox="0 0 48 26" width="44" height="24" aria-hidden="true" fill="none" stroke="#1d1c1b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M5 15C7 6 15 4 15 11s-9 9-6 1 12-8 13 0-8 10-5 2 13-9 14-1-7 10-4 2 12-8 13 0"/><path d="M8 20c8-2 22-3 33-1"/></svg>';
+    function full(){ CAT.snub(); speak(SCRIBBLE, 'Il n’a plus faim'); }   /* no more food today: a grumpy black scribble */
     function hearts(){
       const p = CAT.pos(), [x, y] = scr(p.x, p.y + CAT_TOP * 0.8, p.z);
       for (let i = 0; i < 3; i++){
@@ -3441,10 +3471,34 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
       for (const it of S.items){ if (!usable(it)) continue; const [cx, cz] = center(it.i, it.j), [sx, sy] = scr(cx, (it.y || 0) + 0.25, cz), d = Math.hypot(sx - x, sy - y); if (d < bd){ bd = d; best = it; } }
       return best;
     }
+    /* ---- kibble: the bowl fills when you feed the cat, and empties bit by bit as it eats ---- */
+    const KG = [0x9a5c30, 0xb3743f, 0x87512b].map(c => tinted(new THREE.SphereGeometry(0.052, 12, 8).scale(1, 0.62, 1), c));
+    let kib = null;
+    function fillBowl(b){
+      if (kib && kib.grp.parent) kib.grp.parent.remove(kib.grp);
+      const grp = new THREE.Group(), list = [], N = 22;
+      for (let k = 0; k < N; k++){                                   // a little mound, highest in the middle
+        const a = k * 2.39996, r = 0.235 * Math.sqrt((k + 0.5) / N), m = new THREE.Mesh(KG[k % 3], MAT.plain);
+        m.position.set(Math.cos(a) * r, 0.085 + 0.075 * (1 - r / 0.25) + (k % 2) * 0.012, Math.sin(a) * r);
+        m.rotation.set(Math.random() * 0.6, Math.random() * 6.3, Math.random() * 0.6); grp.add(m); list.push(m);
+      }
+      list.sort((p, q) => q.position.y - p.position.y);              // eaten from the top of the mound down
+      kib = {b, grp, list, started: false, last: 0}; kibLoop();
+    }
+    function kibLoop(){
+      if (!kib) return;
+      const e = FRONT.get(kib.b.u);
+      if (!S.items.includes(kib.b)){ if (kib.grp.parent) kib.grp.parent.remove(kib.grp); kib = null; return; }
+      if (e && kib.grp.parent !== e.g) e.g.add(kib.grp);              // the bowl was rebuilt or moved: the kibble goes with it
+      const p = CAT.eatProgress();
+      if (p !== null){ kib.started = true; kib.last = p; const keep = Math.ceil(kib.list.length * (1 - p)); kib.list.forEach((m, k) => { m.visible = k >= kib.list.length - keep; }); }
+      else if (kib.started){ if (kib.last > 0.8){ if (kib.grp.parent) kib.grp.parent.remove(kib.grp); kib = null; return; } kib.started = false; }   // finished: the bowl is empty
+      requestAnimationFrame(kibLoop);
+    }
     feed.addEventListener('click', () => {
       const b = bowl; hideFeed(); if (!b) return;
       if (C().meals >= CAPS.meals){ full(); return; }
-      if (CAT.goEat()) count('meals'); else toast('Le chat ne peut pas aller jusqu’à sa gamelle');
+      if (CAT.goEat()){ count('meals'); fillBowl(b); } else toast('Le chat ne peut pas aller jusqu’à sa gamelle');
     });
     function tap(x, y, exact){
       if (window.__editing) return false;
