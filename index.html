@@ -2503,7 +2503,8 @@ const WORLD = (() => {
 .wtab svg{transition:transform .25s}
 .wtab:focus-visible{outline:2px solid #fff; outline-offset:2px}
 .controls{transition:opacity .2s ease, transform .25s ease; top:calc(50px + env(safe-area-inset-top, 0px)) !important}
-body:not(.wx-open) .controls{opacity:0; transform:translateY(-14px); pointer-events:none}
+body:not(.wx-open) .controls{opacity:0; transform:translateY(-14px); pointer-events:none !important; visibility:hidden; transition:opacity .2s ease, transform .25s ease, visibility 0s .25s}
+body:not(.wx-open) .controls *{pointer-events:none !important}
 body.wx-open .wtab svg{transform:rotate(180deg)}`;
     document.head.append(css);
     const tab = document.createElement('button'); tab.className = 'wtab'; tab.setAttribute('aria-label', 'Afficher les boutons météo'); tab.setAttribute('aria-expanded', 'false');
@@ -3474,16 +3475,18 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
     /* ---- kibble: the bowl fills when you feed the cat, and empties bit by bit as it eats ---- */
     const KG = [0x9a5c30, 0xb3743f, 0x87512b].map(c => tinted(new THREE.SphereGeometry(0.052, 12, 8).scale(1, 0.62, 1), c));
     let kib = null;
+    const POUR = 0.05, FALL = 0.34;                                   // a piece every 0.05 s, each falling for 0.34 s
     function fillBowl(b){
       if (kib && kib.grp.parent) kib.grp.parent.remove(kib.grp);
-      const grp = new THREE.Group(), list = [], N = 22;
-      for (let k = 0; k < N; k++){                                   // a little mound, highest in the middle
-        const a = k * 2.39996, r = 0.235 * Math.sqrt((k + 0.5) / N), m = new THREE.Mesh(KG[k % 3], MAT.plain);
-        m.position.set(Math.cos(a) * r, 0.085 + 0.075 * (1 - r / 0.25) + (k % 2) * 0.012, Math.sin(a) * r);
-        m.rotation.set(Math.random() * 0.6, Math.random() * 6.3, Math.random() * 0.6); grp.add(m); list.push(m);
+      const grp = new THREE.Group(), list = [], N = 46;
+      for (let k = 0; k < N; k++){                                   // a heaped mound, highest in the middle
+        const a = k * 2.39996, r = 0.245 * Math.sqrt((k + 0.5) / N), m = new THREE.Mesh(KG[k % 3], MAT.plain);
+        m.userData.to = new THREE.Vector3(Math.cos(a) * r, 0.085 + 0.13 * (1 - r / 0.26) + (k % 3) * 0.01, Math.sin(a) * r);
+        m.rotation.set(Math.random() * 0.6, Math.random() * 6.3, Math.random() * 0.6); m.visible = false; grp.add(m); list.push(m);
       }
-      list.sort((p, q) => q.position.y - p.position.y);              // eaten from the top of the mound down
-      kib = {b, grp, list, started: false, last: 0}; kibLoop();
+      list.sort((p, q) => q.userData.to.y - p.userData.to.y);        // eaten from the top of the mound down...
+      list.forEach((m, k) => { m.userData.at = (N - 1 - k) * POUR + Math.random() * 0.02; m.userData.from = new THREE.Vector3((Math.random() - 0.5) * 0.06, 1.05, (Math.random() - 0.5) * 0.06); });   // ...and poured in from the bottom up
+      kib = {b, grp, list, started: false, last: 0, t0: performance.now(), eaten: 0}; kibLoop();
     }
     function kibLoop(){
       if (!kib) return;
@@ -3491,8 +3494,17 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
       if (!S.items.includes(kib.b)){ if (kib.grp.parent) kib.grp.parent.remove(kib.grp); kib = null; return; }
       if (e && kib.grp.parent !== e.g) e.g.add(kib.grp);              // the bowl was rebuilt or moved: the kibble goes with it
       const p = CAT.eatProgress();
-      if (p !== null){ kib.started = true; kib.last = p; const keep = Math.ceil(kib.list.length * (1 - p)); kib.list.forEach((m, k) => { m.visible = k >= kib.list.length - keep; }); }
+      if (p !== null){ kib.started = true; kib.last = p; kib.eaten = kib.list.length - Math.ceil(kib.list.length * (1 - p)); }
       else if (kib.started){ if (kib.last > 0.8){ if (kib.grp.parent) kib.grp.parent.remove(kib.grp); kib = null; return; } kib.started = false; }   // finished: the bowl is empty
+      const now = (performance.now() - kib.t0) / 1000;
+      kib.list.forEach((m, k) => {                                    // each piece drops from the bag in a stream, lands with a little hop
+        const u = m.userData, tt = now - u.at;
+        m.visible = tt >= 0 && k >= kib.eaten;
+        if (!m.visible) return;
+        const s = Math.min(1, tt / FALL);
+        m.position.lerpVectors(u.from, u.to, s); m.position.y = u.from.y + (u.to.y - u.from.y) * s * s;
+        if (tt > FALL && tt < FALL + 0.12) m.position.y += 0.025 * Math.sin((tt - FALL) / 0.12 * Math.PI);
+      });
       requestAnimationFrame(kibLoop);
     }
     feed.addEventListener('click', () => {
