@@ -1305,7 +1305,8 @@ const CAT = (() => {
     if (s.want){                                                     /* fed, or shown a toy: walking there, then eating or playing */
       if (s.at === s.want && !s.path.length){ const w = s.want; s.want = null; s.keep = false;
         if (ACTS[w] === 'eat'){ s.flip = w.endsWith('_L') ? 1 : -1; s.pose = 'eat'; s.timer = 6 + Math.random() * 3; s.eatDur = s.timer; s.ate = true; return; }
-        if (ACTS[w] === 'play'){ s.pose = 'play'; s.timer = 7 + Math.random() * 4; return; } }
+        if (ACTS[w] === 'play'){ const ta = window.TOY_AT && TOY_AT[w]; if (ta){ const sx = scrX(CV.set(ta[0] - s.pos.x, 0, ta[1] - s.pos.z)); if (Math.abs(sx) > 0.05) s.flip = sx > 0 ? -1 : 1; }
+          s.pose = 'play'; s.timer = 7 + Math.random() * 4; return; } }
       else if (s.path.length) return;
       else s.want = null;
     }
@@ -1553,26 +1554,56 @@ const CAT = (() => {
     const c = s.chase;
     if (s.pounce){ const P = s.pounce; P.t = Math.min(1, P.t + dt / P.dur);
       s.pos.lerpVectors(P.a, P.b, P.t); s.pos.y += 4 * P.h * P.t * (1 - P.t); s.cpose = 'leap';
-      if (P.t >= 1){ s.pos.copy(P.b); s.pounce = null; c.cool = 0.8 + Math.random() * 1.4; } return true; }
-    let best = null, bd = 1e9;
-    for (const n in NODES){ if (n[0] !== 't') continue; const N = NODES[n], d = (N[0] - c.x) ** 2 + (N[2] - c.z) ** 2; if (d < bd){ bd = d; best = n; } }
+      if (P.t >= 1){ s.pos.copy(P.b); if (P.to) s.at = P.to; s.pounce = null; c.land = [P.b.x, P.b.z]; c.lands = (c.lands || 0) + 1; c.cool = 0.8 + Math.random() * 1.4;
+        c.gap = 1.4 + Math.random() * 1.6; if (Math.random() < 0.5) c.walk = true; } return true; }   /* now and then it trots off a little, to pounce again from farther */
+    { const sx = scrX(CV.set(s.pos.x - c.x, 0, s.pos.z - c.z)); if (!c.side || Math.abs(sx) > 0.35) c.side = sx >= 0 ? 1 : -1; }   /* it keeps to the side it is on, never crossing under the toy */
+    c.mx += (c.x - c.mx) * Math.min(1, dt * 2.5); c.mz += (c.z - c.mz) * Math.min(1, dt * 2.5);   /* it follows where the toy hangs, not every swing */
+    const near = (x, z) => { let b = null, bd = 1e9; for (const n in NODES){ if (n[0] !== 't') continue; const N = NODES[n], d = (N[0] - x) ** 2 + (N[2] - z) ** 2; if (d < bd){ bd = d; b = n; } } return b; };
+    const leapTo = N => {                                             /* a pounce: it lands just short of the toy, on its side, from wherever it is */
+      const tx = c.x - s.pos.x, tz = c.z - s.pos.z, td = Math.hypot(tx, tz) || 1, b = new THREE.Vector3(c.x - tx / td * 0.75, N[1], c.z - tz / td * 0.75);
+      const n = near(b.x, b.z), M = NODES[n]; let to = null;               /* onto the toy's square if that is ground at the same height */
+      if (M && Math.abs(M[1] - N[1]) < 0.05 && (Math.abs(b.x - M[0]) < 1 && Math.abs(b.z - M[2]) < 1 || window.ISLE_GROUND && ISLE_GROUND(b.x, b.z))) to = Math.abs(b.x - M[0]) < 1 && Math.abs(b.z - M[2]) < 1 ? n : s.at; else { b.x = clamp(b.x, N[0] - 0.95, N[0] + 0.95); b.z = clamp(b.z, N[2] - 0.95, N[2] + 0.95); }
+      const L = Math.hypot(b.x - s.pos.x, b.z - s.pos.z), sdx = scrX(CV.set(tx, 0, tz)); if (Math.abs(sdx) > 0.05) s.flip = sdx > 0 ? -1 : 1;
+      s.pounce = {a: s.pos.clone(), b, to, t: 0, dur: 0.38 + L * 0.14, h: 0.25 + L * 0.13 + Math.max(0, c.y - 0.6) * 0.9}; c.far = 1.5 + Math.random() * 2; };
+    const play = N => {                                               /* crouched, facing the toy, a pounce now and then */
+      const sdx = scrX(CV.set(c.x - s.pos.x, 0, c.z - s.pos.z)); if (Math.abs(sdx) > 0.05) s.flip = sdx > 0 ? -1 : 1;
+      s.cpose = 'play'; c.playing = true; c.cool -= dt;
+      if (c.cool <= 0) leapTo(N);
+      return true; };
+    c.far = (c.far === undefined ? 1 : c.far) - dt;
+    { const dm = Math.hypot(s.pos.x - c.mx, s.pos.z - c.mz), ok = scrX(CV.set(s.pos.x - c.mx, 0, s.pos.z - c.mz)) * c.side > 0.3;
+      if (!c.walk && !s.path.length && !s.jump && s.at && s.at[0] === 't' && dm > 0.55 && dm < (c.gap || 1.7) + 0.8 && ok) return play(NODES[s.at]);   /* a good spot: it stays and plays */
+      c.walk = true; }
+    const GAP = c.gap || 1.7;
+    let best = null, gx = 0, gz = 0;
+    for (const side of [c.side, -c.side]){                           /* beside the toy, on whichever square that spot falls on */
+      CV.set(R_.x, 0, R_.z).normalize(); const ox = c.mx + CV.x * side * GAP, oz = c.mz + CV.z * side * GAP, n = near(ox, oz); if (!n) continue;
+      const N = NODES[n], x = clamp(ox, N[0] - 0.85, N[0] + 0.85), z = clamp(oz, N[2] - 0.85, N[2] + 0.85);
+      let m = n; const H = NODES[s.at]; if (H && s.at[0] === 't' && Math.abs(ox - H[0]) < 1.05 && Math.abs(oz - H[2]) < 1.05) m = s.at;   /* stay on its square while the spot is near it */
+      const M = NODES[m], x2 = clamp(ox, M[0] - 0.85, M[0] + 0.85), z2 = clamp(oz, M[2] - 0.85, M[2] + 0.85);
+      if (!best || Math.hypot(x2 - c.mx, z2 - c.mz) > Math.hypot(gx - c.mx, gz - c.mz) + 0.25){ best = m; gx = x2; gz = z2; if (side !== c.side) c.side = side; }
+      if (Math.hypot(gx - c.mx, gz - c.mz) > GAP * 0.8) break;
+    }
     if (!best) return false;
     if (s.jump) return false;
-    if (s.at !== best && !s.path.length){ const p = route(s.at, best, false); if (p.length){ s.path = p; return false; } }
+    if (s.at !== best && !s.path.length){ const A = NODES[s.at], B = NODES[best];   /* the square next door: just step across, no detour through the toy's square */
+      const [ai, aj] = s.at.slice(1).split(',').map(Number), [bi, bj] = best.slice(1).split(',').map(Number), flat = n => NODES[n] && Math.abs(NODES[n][1] - B[1]) < 0.05;
+      const diag = Math.abs(ai - bi) === 1 && Math.abs(aj - bj) === 1 && flat('t' + ai + ',' + bj) && flat('t' + bi + ',' + aj);
+      if (A && s.at[0] === 't' && Math.abs(A[1] - B[1]) < 0.05 && (Math.abs(ai - bi) + Math.abs(aj - bj) === 1 || diag)) s.at = best;
+      else { const p = route(s.at, best, false); if (p.length){ s.path = p; return false; } } }
     if (s.path.length){ if (s.path[s.path.length - 1] !== best){ const p = route(s.path[0], best, false); s.path = [s.path[0], ...p]; } return false; }
-    const N = NODES[best], gx = clamp(c.x, N[0] - 0.85, N[0] + 0.85), gz = clamp(c.z, N[2] - 0.85, N[2] + 0.85);
-    CV.set(gx - s.pos.x, 0, gz - s.pos.z); const d = CV.length(), sdx = scrX(CV.set(c.x - s.pos.x, 0, c.z - s.pos.z));
-    if (Math.abs(sdx) > 0.05) s.flip = sdx > 0 ? -1 : 1;
-    if (d > 0.7){ const step = Math.min(d - 0.6, 1.8 * dt); CV.set(gx - s.pos.x, 0, gz - s.pos.z).normalize(); s.pos.addScaledVector(CV, step); s.pos.y = N[1];
-      s.cpose = 'trot'; const L = DATA.trot && DATA.trot.gait; if (L) s.ph = (s.ph + dt * 1.8 * L.stance / (L.stride * SC)) % 1; c.cool = Math.max(c.cool, 0.4); return true; }
-    s.cpose = 'play'; c.playing = true; c.cool -= dt;
-    if (c.cool <= 0){ const b = new THREE.Vector3(gx, N[1], gz).lerp(s.pos, 0.25); s.pounce = {a: s.pos.clone(), b, t: 0, dur: 0.55, h: 0.35 + Math.max(0, c.y - 0.6) * 0.9}; }
-    return true;
+    const N = NODES[best];
+    CV.set(gx - s.pos.x, 0, gz - s.pos.z); const d = CV.length();
+    { const td = Math.hypot(c.x - s.pos.x, c.z - s.pos.z); if (c.far <= 0 && td > 1.6 && td < 3.4 && c.y - N[1] < 1.4 && Math.random() < dt * 2){ c.walk = false; leapTo(N); return true; } }   /* from farther out, on the way */
+    if (d > 0.15){ const step = Math.min(d, 1.8 * dt); CV.normalize(); s.pos.addScaledVector(CV, step); s.pos.y = N[1];   /* walking to its spot, facing the way it goes */
+      const wdx = scrX(CV); if (Math.abs(wdx) > 0.05) s.flip = wdx > 0 ? -1 : 1;
+      s.cpose = 'trot'; const L = DATA.trot && DATA.trot.gait; if (L) s.ph = (s.ph + dt * 1.8 * L.stance / (L.stride * SC)) % 1; c.cool = Math.max(c.cool, 0.6); return true; }
+    c.walk = false; return play(N);
   }
   function chase(p){                                                 /* p: where the toy is; null: let go */
     if (!p){ if (s.chase){ if (s.pounce){ s.pos.copy(s.pounce.b); s.pounce = null; } s.chase = null; s.timer = 0; } return false; }
     if (s.held || s.fall || s.away) return false;
-    if (!s.chase){ s.chase = {x: p.x, y: p.y, z: p.z, cool: 1, playing: false}; s.want = null; s.scare = 0; s.tap = 0; if (s.hideT > 0) s.hideT = 0.01; }
+    if (!s.chase){ s.chase = {x: p.x, y: p.y, z: p.z, mx: p.x, mz: p.z, cool: 1, playing: false}; s.want = null; s.scare = 0; s.tap = 0; if (s.hideT > 0) s.hideT = 0.01; }
     else { s.chase.x = p.x; s.chase.y = p.y; s.chase.z = p.z; }
     return s.chase.playing;
   }
@@ -1589,7 +1620,7 @@ const CAT = (() => {
     for (const n of Object.keys(NODES)){ if (ACTS[n] !== 'eat') continue; const p = n === from ? [] : route(from, n, false); if (n !== from && !p.length) continue; if (p.length < bl){ bl = p.length; best = n; } }
     return best ? goTo(best, 'eat') : false;
   }
-  return {chase, goEat, goPlay: n => ACTS[n] === 'play' && goTo(n, 'play'), eating: () => s.pose === 'eat' && !s.path.length || ACTS[s.want] === 'eat',
+  return {where: () => s.held || s.fall || s.away ? null : [s.pos.x, s.pos.z], paw: () => s.chase ? {x: s.pos.x, y: s.pos.y, z: s.pos.z, leap: s.pounce ? s.pounce.t : -1, lands: s.chase.lands || 0, land: s.chase.land, playing: s.chase.playing} : null, chase, goEat, goPlay: n => ACTS[n] === 'play' && goTo(n, 'play'), eating: () => s.pose === 'eat' && !s.path.length || ACTS[s.want] === 'eat',
           eatProgress: () => s.pose === 'eat' && !s.path.length && s.eatDur ? Math.min(1, Math.max(0, 1 - s.timer / s.eatDur)) : null,
           pet(){ if (s.held || s.fall || s.away || s.hideT > 0) return false;      /* petted: it stops, sits looking happy and purrs */
             PURR.until = performance.now() + 4500;
@@ -1605,14 +1636,14 @@ const CAT = (() => {
   canvas.addEventListener('pointerdown', e => {
     if (window.__editing){ down = null; return; }
     if (e.pointerType !== 'mouse') touches++;
-    down = {x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId, onCat: CAT.hits(e.clientX, e.clientY)}; if (!down.onCat) down.toy = WORLD.care.toyAt(e.clientX, e.clientY);
+    down = {x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId, onCat: CAT.hits(e.clientX, e.clientY)}; { const tf = WORLD.care.toyAt(e.clientX, e.clientY, true); if (tf){ down.onCat = false; down.toy = tf; } else if (!down.onCat) down.toy = WORLD.care.toyAt(e.clientX, e.clientY); }   /* right on a toy: the toy, even with the cat beside it */
     if (down.onCat){ down.len = 0; down.lx = e.clientX; down.ly = e.clientY; holdT = setTimeout(() => { if (down && !down.stroke) CAT.grab(down.x, down.y); }, 380); }   /* hold still: picked up */
   });
   canvas.addEventListener('pointermove', e => {
     if (!down || e.pointerId !== down.id) return;
     if (CAT.holding()) CAT.grab(e.clientX, e.clientY);
     else if (down.toy){                                             /* a toy picked up by its thread */
-      if (!down.dragging && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8){ down.dragging = true; WORLD.care.dragStart(down.toy, e.clientX, e.clientY); }
+      if (!down.dragging && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5){ down.dragging = true; WORLD.care.dragStart(down.toy, e.clientX, e.clientY); }
       if (down.dragging) WORLD.care.dragMove(e.clientX, e.clientY);
     }
     else if (!down.onCat && e.pointerType !== 'mouse' && touches === 1 && zoom < 1.01 && !gyro){   // one finger on the scene: tilt it
@@ -2354,7 +2385,7 @@ const WORLD = (() => {
       const eye = xf(tinted(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 20), 0x58b2e8), [0.34, 0.205, -0.08]);
       return [[merge([ex(body), ex(tail)]), MAT.fish], [eye, MAT.plain]];
     },
-    yarn(){                                                         // a ball of yarn wearing its own picture, and a loose end on the floor
+    yarn(){                                                         // a ball of yarn wearing its own picture
       const pic = viewOf('yarn', 1), im = new Image(), tex = new THREE.Texture(); im.onload = () => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const x = c.getContext('2d');
         x.fillStyle = '#d8604f'; x.fillRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0); tex.image = c; tex.needsUpdate = true; };   // the gaps between the strands: deeper yarn, not see-through
       im.src = pic.img; MAT.yarn.uniforms.uMap.value = tex;
@@ -2362,8 +2393,7 @@ const WORLD = (() => {
       const g = new THREE.SphereGeometry(R0, 48, 32), p = g.attributes.position, uv = g.attributes.uv;
       for (let k = 0; k < p.count; k++){ uv.setXY(k, cx + p.getX(k) / R0 * rx, 1 - (cy - p.getY(k) / R0 * ry)); }
       g.translate(0, R0, 0);
-      const end = new THREE.TubeGeometry(new THREE.CatmullRomCurve3([[-0.13, 0.16, 0.22], [-0.24, 0.07, 0.27], [-0.45, 0.04, 0.32], [-0.62, 0.04, 0.3], [-0.68, 0.04, 0.16], [-0.6, 0.05, 0.06]].map(a => new THREE.Vector3(...a))), 40, 0.045, 10, false);
-      return [[tinted(g, 0xffffff), MAT.yarn], [tinted(end, 0xf4806c), MAT.plain]];
+      return [[tinted(g, 0xffffff), MAT.yarn]];                    // no loose end: the thread is the one you pick it up by
     },
     fence(){                                                        // two posts, two rails and three bars, along x on the tile edge
       const L = T - 0.1, H = 1.1, parts = [];
@@ -2842,6 +2872,11 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
       const it = BY[r.id]; if (it.walk !== 'spot' || onTile(r.i, r.j).some(o => !isEdge(o) && (o.y || 0) > (r.y || 0) && (o.y || 0) < topOf(r) + 0.6)) continue;   // something sitting right on it
       const [x, z] = center(r.i, r.j), y = (r.y || 0) + (it.act === 'perch' ? it.top : 0) + (CAV ? (FRONT_SIT[r.id] || 0) * (r.s || 1) * (FRONT_SIZE[r.id] || 1) : 0), n = 'i' + r.u;
       { const fw = CAV ? (FRONT_FWD[r.id] || 0) * (r.s || 1) * (FRONT_SIZE[r.id] || 1) : 0, rr = ((r.r || 0) % 4 + 4) % 4; nodes[n] = [x + EDGE[rr][0] * fw, y, z + EDGE[rr][1] * fw]; } acts[n] = it.act;
+      if (CAV && it.act === 'play' && (r.id === 'yarn' || r.id === 'fish')){   /* the cat plays beside a toy on the ground, never on top of it */
+        const L = Math.hypot(R_.x, R_.z) || 1, ux = R_.x / L, uz = R_.z / L; let got = false;
+        for (const sd of [1, -1]){ const px = x + ux * sd * 1.5, pz = z + uz * sd * 1.5, [ti, tj] = tileOf(px, pz); if (tiles.has(key(ti, tj))){ nodes[n] = [px, y, pz]; got = true; break; } }
+        if (!got) nodes[n] = [x + ux * 0.95, y, z + uz * 0.95];
+        (window.TOY_AT || (window.TOY_AT = {}))[n] = [x, z]; }
       const tube = OPEN[r.id] && OPEN[r.id].low;                    // a tunnel or a log: in and out only at its two ends
       const door = doorOf(r), [ddi, ddj] = door === null ? [0, 0] : EDGE[door];   // a home: in and out only through its doorway (if there's ground there)
       const useDoor = door !== null && !!nodes['t' + key(r.i + ddi, r.j + ddj)];
@@ -3528,38 +3563,123 @@ body.wx-open .wtab svg{transform:rotate(180deg)}`;
     function pet(){ if (!CAT.pet()) return; hearts(); count('pets'); }
 
     /* ---- dangling a toy by its thread: the cat follows it, plays and pounces; let go and it lands on the square below ---- */
-    const HANG = 2.4, LOW = 0.75;                                     // the finger holds the thread this high; the toy swings this high off the ground
-    const threadMat = new THREE.LineBasicMaterial({color: 0xc95a4a}), PL = new THREE.Plane(new THREE.Vector3(0, 1, 0), -HANG), HIT = new THREE.Vector3();
+    const HANG = 2.5, ROPE = 0.95, GRAV = 14;                          // the finger holds the thread this high; the thread is this long
+    const PL = new THREE.Plane(new THREE.Vector3(0, 1, 0), -HANG), HIT = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), Q = new THREE.Quaternion(), QY = new THREE.Quaternion();
+    const threadGeo = new THREE.CylinderGeometry(0.045, 0.045, 1, 8).translate(0, 0.5, 0), threadMat = new THREE.MeshBasicMaterial({color: 0xe8705f});   // a strand of the same yarn
     let drag = null;
-    const toyAt = (x, y) => { if (window.__editing) return null; const o = pickAt(x, y, false); return o && o.id !== 'bowl' && FRONT.has(o.u) ? o : null; };
+    window.ISLE_GROUND = (x, z) => { const [i, j] = tileOf(x, z); return tiles.has(key(i, j)); };   // is there ground here (a toy's own square counts)
+    function toyAt(x, y, close){                                      // a toy under the finger, or near enough (close: so near it wins over the cat)
+      if (window.__editing) return null;
+      const r = canvas.getBoundingClientRect(); RC2.setFromCamera({x: (x - r.left) / r.width * 2 - 1, y: 1 - (y - r.top) / r.height * 2}, cam);
+      let o = null; try { o = frontHit(RC2); } catch (e){}
+      if (o && o.id !== 'bowl' && usable(o) && FRONT.has(o.u)) return o;
+      let best = null, bd = close ? 44 : 80;
+      for (const it of S.items){ if (it.id === 'bowl' || !usable(it) || !FRONT.has(it.u)) continue;
+        const g = FRONT.get(it.u).g, [sx, sy] = scr(g.position.x, g.position.y + (it.id === 'fish' ? 0.15 : 0.4) * g.scale.y, g.position.z), d = Math.hypot(sx - x, sy - y);   // from the middle of the ball
+        if (d < bd){ bd = d; best = it; } }
+      return best;
+    }
     function fingerAt(x, y){                                          // where the thread's end is, under the finger
       const r = canvas.getBoundingClientRect(); RC2.setFromCamera({x: (x - r.left) / r.width * 2 - 1, y: 1 - (y - r.top) / r.height * 2}, cam);
       return RC2.ray.intersectPlane(PL, HIT) ? HIT.clone() : null;
     }
     function dragStart(o, x, y){
+      if (roll) endRoll(true);
       const e = FRONT.get(o.u); if (!e || drag) return;
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), threadMat); line.frustumCulled = false; scene.add(line);
-      const p = e.g.position.clone();
-      drag = {o, e, line, home: p.clone(), sgHome: e.sg.position.clone(), pos: p.clone(), vel: new THREE.Vector3(), top: fingerAt(x, y) || p.clone().setY(HANG), raf: 0, counted: false};
-      hideFeed(); tick();
+      const line = new THREE.Mesh(threadGeo, threadMat); line.frustumCulled = false; scene.add(line);
+      const p = e.g.position.clone(), k = e.g.scale.x;
+      drag = {o, e, line, home: p.clone(), sgHome: e.sg.position.clone(), q0: e.g.quaternion.clone(), pos: null, prev: null, top: fingerAt(x, y) || p.clone().setY(HANG),
+        knot: (o.id === 'fish' ? 0.2 : 0.8) * k, rad: (o.id === 'fish' ? 0.45 : 0.4) * k, last: performance.now(), raf: 0, counted: false};
+      drag.pos = p.clone().setY(p.y + drag.knot); drag.prev = drag.pos.clone(); drag.hand = drag.top.clone(); hideFeed(); tick();
     }
     function dragMove(x, y){ if (!drag) return; const f = fingerAt(x, y); if (f) drag.top.copy(f); }
-    function tick(){                                                  // the toy swings after the finger like a pendulum
+    function step(d, h){                                              // the knot on a string: it falls, the thread pulls it back, it swings
+      let vx = (d.pos.x - d.prev.x) * 0.99, vy = (d.pos.y - d.prev.y) * 0.99, vz = (d.pos.z - d.prev.z) * 0.99;
+      const sp = Math.hypot(vx, vy, vz), mx = 7 * h; if (sp > mx){ vx *= mx / sp; vy *= mx / sp; vz *= mx / sp; }   // never whipped around
+      d.hand.lerp(d.top, Math.min(1, h * 18));                        // the hand follows the finger, a little softened
+      d.prev.copy(d.pos); d.pos.x += vx; d.pos.y += vy - GRAV * h * h; d.pos.z += vz;
+      const dx = d.pos.x - d.hand.x, dy = d.pos.y - d.hand.y, dz = d.pos.z - d.hand.z, L = Math.hypot(dx, dy, dz);
+      if (L > ROPE){ const f = ROPE / L, cx = d.pos.x, cy = d.pos.y, cz = d.pos.z; d.pos.set(d.hand.x + dx * f, d.hand.y + dy * f, d.hand.z + dz * f);   // the thread is taut
+        d.prev.x += (d.pos.x - cx) * 0.4; d.prev.y += (d.pos.y - cy) * 0.4; d.prev.z += (d.pos.z - cz) * 0.4; }      // and soaks up part of the tug
+      const floor = d.home.y + d.knot; if (d.pos.y < floor){ d.pos.y = floor; d.prev.y = floor; d.prev.x += (d.pos.x - d.prev.x) * 0.3; d.prev.z += (d.pos.z - d.prev.z) * 0.3; }   // it drags along the ground
+    }
+    const U = new THREE.Vector3(), TOY = new THREE.Vector3();
+    function kick(d, dx, dz, up, k){                                  // knock the toy: a nudge to its speed
+      const L = Math.hypot(dx, dz) || 1; d.prev.x -= dx / L * k; d.prev.z -= dz / L * k; d.prev.y -= up; }
+    function bump(d, dt){                                             // the cat's paws and pounces knock it about
+      const c = CAT.paw(); if (!c || !d.at) return;
+      const dx = d.at.x - c.x, dz = d.at.z - c.z, dist = Math.hypot(dx, dz), low = d.at.y - c.y < 1.4;
+      if (d.lands === undefined) d.lands = c.lands;
+      else if (c.lands !== d.lands){ d.lands = c.lands; const lx = d.at.x - c.land[0], lz = d.at.z - c.land[1];
+        if (Math.hypot(lx, lz) < 1.35 && low) kick(d, lx, lz, 0.02, 0.045); }   // each pounce that lands with its front paws on the ball knocks it
+    }
+    function tick(){
       if (!drag) return;
-      const d = drag, want = V.set(d.top.x, LOW, d.top.z);
-      d.vel.addScaledVector(want.sub(d.pos), 0.09).multiplyScalar(0.84); d.pos.add(d.vel); d.pos.y = LOW + Math.min(0.5, d.vel.length() * 0.6);
-      d.e.g.position.copy(d.pos); d.e.sg.position.set(d.pos.x, d.home.y, d.pos.z);
-      const a = d.line.geometry.attributes.position; a.setXYZ(0, d.pos.x, d.pos.y + 0.32, d.pos.z); a.setXYZ(1, d.top.x, d.top.y, d.top.z); a.needsUpdate = true;
-      if (CAT.chase(d.pos) && !d.counted){ d.counted = true; count('plays'); }
+      const d = drag, now = performance.now(), dt = Math.min(0.05, (now - d.last) / 1000); d.last = now;
+      bump(d, dt);
+      const n = Math.max(1, Math.ceil(dt / 0.008)); for (let i = 0; i < n; i++) step(d, dt / n);
+      U.copy(d.hand).sub(d.pos); const len = U.length(); U.normalize();
+      Q.setFromUnitVectors(UP, U); QY.copy(Q).multiply(d.q0); TOY.copy(d.pos).addScaledVector(U, -d.knot);   // it hangs below its knot and tilts with the swing
+      d.e.g.position.copy(TOY); d.e.g.quaternion.copy(QY); d.e.sg.position.copy(TOY); d.e.sg.quaternion.copy(QY); aimShadows();
+      d.line.position.copy(d.pos); d.line.quaternion.copy(Q); d.line.scale.set(1, len, 1);
+      d.at = TOY;
+      if (CAT.chase(TOY) && !d.counted){ d.counted = true; count('plays'); }
       d.raf = requestAnimationFrame(tick);
     }
+    const busy = (i, j, o) => !tiles.has(key(i, j)) || onTile(i, j, o).some(r => !isEdge(r));   // water, or something standing there
     function dragEnd(){
-      if (!drag) return; const d = drag; drag = null; cancelAnimationFrame(d.raf); scene.remove(d.line); d.line.geometry.dispose();
-      const [i, j] = tileOf(d.pos.x, d.pos.z), free = tiles.has(key(i, j)) && !onTile(i, j, d.o).some(r => !isEdge(r));
-      CAT.chase(null);
-      if (free && (i !== d.o.i || j !== d.o.j)){ d.o.i = i; d.o.j = j; rebuildItems(); rebuildGraph(); save(); }   // it lands on the square below
-      else { d.e.g.position.copy(d.home); d.e.sg.position.copy(d.sgHome); }                                       // over the water or something else: back where it was
-      CAT.goPlay('i' + d.o.u);                                       // and the cat plays with it a little longer
+      if (!drag) return; const d = drag; drag = null; cancelAnimationFrame(d.raf); scene.remove(d.line);
+      const [i, j] = tileOf(d.at.x, d.at.z);
+      if (busy(i, j, d.o)){                                           // over the water or something else: back where it was
+        d.e.g.quaternion.copy(d.q0); d.e.sg.quaternion.copy(d.q0); d.e.g.position.copy(d.home); d.e.sg.position.copy(d.sgHome); aimShadows();
+        CAT.chase(null); CAT.goPlay('i' + d.o.u); return; }
+      const v = d.pos.clone().sub(d.prev).multiplyScalar(1 / 0.008);  // it keeps a little of its swing
+      roll = {o: d.o, e: d.e, q0: d.q0, spin: new THREE.Quaternion(), ball: d.o.id !== 'fish', rad: d.rad, floor: d.home.y,
+        pos: new THREE.Vector3(d.at.x, d.home.y, d.at.z), y: Math.max(0, d.at.y - d.home.y), vy: 0, vel: new THREE.Vector2(v.x, v.z).multiplyScalar(0.35),
+        until: performance.now() + 7000 + Math.random() * 3000, lands: undefined, last: performance.now(), raf: 0, settle: null};
+      rollTick();
+    }
+    /* ---- on the ground: it pounces on it, the ball rolls off, it goes after it; then it settles on its square ---- */
+    let roll = null;
+    const AX = new THREE.Vector3(), QS = new THREE.Quaternion(), QT = new THREE.Quaternion(), OFF = new THREE.Vector3(), BALL = new THREE.Vector3();
+    function place(r){                                                // the ball turns about its middle, not about the point it rests on
+      QT.copy(r.spin).multiply(r.q0); OFF.set(0, r.ball ? r.rad : 0, 0).applyQuaternion(QT);
+      BALL.set(r.pos.x, r.floor + r.y + (r.ball ? r.rad : 0), r.pos.z).sub(OFF);
+      r.e.g.position.copy(BALL); r.e.g.quaternion.copy(QT); r.e.sg.position.copy(BALL); r.e.sg.quaternion.copy(QT); aimShadows();
+    }
+    function rollTick(){
+      if (!roll) return;
+      const r = roll, now = performance.now(), dt = Math.min(0.05, (now - r.last) / 1000); r.last = now;
+      if (r.settle){                                                  // gliding onto the middle of its square
+        r.settle.t = Math.min(1, r.settle.t + dt / 0.4); r.pos.lerpVectors(r.settle.a, r.settle.b, r.settle.t); r.spin.slerp(new THREE.Quaternion(), r.settle.t * 0.5); place(r);
+        if (r.settle.t >= 1) return endRoll(false);
+        r.raf = requestAnimationFrame(rollTick); return; }
+      const c = CAT.paw();
+      if (c){ if (r.lands === undefined) r.lands = c.lands;
+        else if (c.lands !== r.lands){ r.lands = c.lands; const lx = r.pos.x - c.land[0], lz = r.pos.z - c.land[1], L = Math.hypot(lx, lz);
+          if (L < 1.35){ const k = 1.8 + Math.random() * 1.6; r.vel.x += lx / (L || 1) * k; r.vel.y += lz / (L || 1) * k; r.vy = 1.2 + Math.random() * 0.8; } } }   // the pounce sends it rolling
+      if (c && c.leap < 0){ const ox = r.pos.x - c.x, oz = r.pos.z - c.z, L = Math.hypot(ox, oz) || 1, into = -(r.vel.x * ox + r.vel.y * oz) / L;   // rolling into the cat: it bounces off
+        if (L < 0.8 && into > 0){ r.vel.x += ox / L * into * 1.5; r.vel.y += oz / L * into * 1.5; } }
+      r.vy -= GRAV * dt; r.y += r.vy * dt; if (r.y <= 0){ r.y = 0; r.vy = r.vy < -0.8 ? -r.vy * 0.35 : 0; }   // a small bounce, then on the ground
+      r.vel.multiplyScalar(Math.exp(-(r.y > 0 ? 0.3 : 1.5) * dt));
+      const nx = r.pos.x + r.vel.x * dt, nz = r.pos.z + r.vel.y * dt, [i, j] = tileOf(nx, nz);
+      if (busy(i, j, r.o)) r.vel.multiplyScalar(-0.45);                // the edge, or something in the way: it bounces back
+      else { r.pos.x = nx; r.pos.z = nz; }
+      const sp = r.vel.length();
+      if (r.ball && sp > 0.01){ AX.set(r.vel.y, 0, -r.vel.x).normalize(); QS.setFromAxisAngle(AX, sp * dt / r.rad); r.spin.premultiply(QS); }   // it rolls as it goes
+      place(r);
+      if (!r.settle) CAT.chase(TOY.set(r.pos.x, r.floor + r.y, r.pos.z));   // the cat keeps after it
+      if (now > r.until && sp < 0.08 && r.y === 0){                    // play's over: it settles on the square it stopped on
+        const [ti, tj] = tileOf(r.pos.x, r.pos.z); r.o.i = ti; r.o.j = tj; const [cx, cz] = center(ti, tj);
+        r.settle = {a: r.pos.clone(), b: new THREE.Vector3(cx, r.floor, cz), t: 0}; CAT.chase(null); }
+      r.raf = requestAnimationFrame(rollTick);
+    }
+    function endRoll(now){                                            // now: picked up again mid-roll
+      const r = roll; if (!r) return; roll = null; cancelAnimationFrame(r.raf);
+      if (now){ const [ti, tj] = tileOf(r.pos.x, r.pos.z); if (!busy(ti, tj, r.o)){ r.o.i = ti; r.o.j = tj; } CAT.chase(null); }
+      r.e.g.quaternion.copy(r.q0); r.e.sg.quaternion.copy(r.q0); const [cx, cz] = center(r.o.i, r.o.j); r.e.g.position.set(cx, r.floor, cz); r.e.sg.position.set(cx, r.floor, cz);
+      rebuildItems(); rebuildGraph(); save(); aimShadows();
+      const p = CAT.where(); if (!now && p && Math.hypot(p[0] - cx, p[1] - cz) < 1.1) CAT.goPlay('i' + r.o.u);   // too close: it steps aside, beside the yarn
     }
     return {tap, pet, state: C, toyAt, dragStart, dragMove, dragEnd};
   })();
